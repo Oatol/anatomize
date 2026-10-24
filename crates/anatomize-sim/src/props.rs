@@ -1,8 +1,8 @@
 //! 道具：不属于解剖结构的东西。
 //!
-//! 沙盒不能只有一个人。箱子、球、板子——玩家需要能造东西、挡东西、砸东西。
+//! 沙盒不能只有一个人。箱子、球、刀、枪、油桶——玩家需要能造东西、挡东西、砸东西。
 //! 这些刚体没有 `PartId`（它们不是身体的一部分），所以 `Piece::part` 用
-//! `PartId::NONE` 标记。
+//! `PartId::NONE` 标记，`Piece::item` 记它在物品目录里的下标。
 //!
 //! # 为什么复用 `Piece` 而不是另开一套
 //!
@@ -13,93 +13,15 @@
 use anatomize_core::{PartId, Vec2};
 use rapier2d::prelude::*;
 
+use crate::items::{ItemCatalog, ItemDef};
 use crate::{CM, Piece, PieceId, RVec2, Sim, rv};
 
-/// 能生成的道具。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PropKind {
-    /// 木箱：1×1 米，轻，好推。
-    Crate,
-    /// 铁球：半径 0.3 米，重，砸得动关节。
-    Ball,
-    /// 长板：2×0.15 米，能搭桥也能当刀下垫板。
-    Plank,
-    /// 水泥块：1.2×1.2 米，非常重，基本不动。
-    Block,
-}
-
-impl PropKind {
-    pub const ALL: [PropKind; 4] = [
-        PropKind::Crate,
-        PropKind::Ball,
-        PropKind::Plank,
-        PropKind::Block,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            PropKind::Crate => "木箱",
-            PropKind::Ball => "铁球",
-            PropKind::Plank => "长板",
-            PropKind::Block => "水泥块",
-        }
-    }
-
-    /// 质量（kg）。
-    pub fn mass(self) -> f32 {
-        match self {
-            PropKind::Crate => 12.0,
-            PropKind::Ball => 80.0,
-            PropKind::Plank => 8.0,
-            PropKind::Block => 300.0,
-        }
-    }
-
-    /// 渲染色。道具没有断面分层，一个颜色到底。
-    pub fn color(self) -> [u8; 4] {
-        match self {
-            PropKind::Crate => [150, 110, 70, 255],
-            PropKind::Ball => [140, 145, 155, 255],
-            PropKind::Plank => [170, 135, 95, 255],
-            PropKind::Block => [120, 120, 125, 255],
-        }
-    }
-
-    /// 部件局部厘米坐标下的多边形。
-    fn polygon(self) -> Vec<Vec2> {
-        match self {
-            PropKind::Crate => rect(50.0, 50.0),
-            PropKind::Ball => circle(30.0, 12),
-            PropKind::Plank => rect(100.0, 7.5),
-            PropKind::Block => rect(60.0, 60.0),
-        }
-    }
-}
-
-fn rect(hw: f32, hh: f32) -> Vec<Vec2> {
-    vec![
-        Vec2::new(-hw, -hh),
-        Vec2::new(hw, -hh),
-        Vec2::new(hw, hh),
-        Vec2::new(-hw, hh),
-    ]
-}
-
-fn circle(r: f32, n: usize) -> Vec<Vec2> {
-    (0..n)
-        .map(|i| {
-            let a = std::f32::consts::TAU * i as f32 / n as f32;
-            Vec2::new(a.cos() * r, a.sin() * r)
-        })
-        .collect()
-}
-
 impl Sim {
-    /// 在世界里生成一个道具。`at` 是中心（世界米）。
+    /// 在世界里生成一个物品。`at` 是中心（世界米）。
     ///
-    /// 返回新块的编号。超出世界边界会被夹回去——沙盒里"点了一下没反应"
-    /// 比"生成了但看不见"更让人困惑。
-    pub fn spawn_prop(&mut self, kind: PropKind, at: Vec2) -> PieceId {
+    /// 超出世界边界会被夹回去——沙盒里"点了一下没反应"比"生成了但看不见"
+    /// 更让人困惑。
+    pub fn spawn_item(&mut self, def: &ItemDef, at: Vec2) -> PieceId {
         let hw = self.world.half_w();
         let margin = 0.35;
         let at = Vec2::new(
@@ -107,14 +29,8 @@ impl Sim {
             at.y.clamp(0.1, self.world.height - margin),
         );
 
-        let polygon = kind.polygon();
-        let area_cm2: f32 = {
-            let mut a = 0.0;
-            for i in 0..polygon.len() {
-                a += polygon[i].perp_dot(polygon[(i + 1) % polygon.len()]);
-            }
-            (a * 0.5).abs()
-        };
+        let polygon = def.shape.polygon();
+        let area_cm2 = anatomize_core::polygon_area(&polygon).abs().max(1.0);
 
         let rb = RigidBodyBuilder::dynamic()
             .translation(rv(at))
@@ -125,8 +41,8 @@ impl Sim {
 
         let pts: Vec<RVec2> = polygon.iter().map(|v| rv(*v * CM)).collect();
         let collider = ColliderBuilder::convex_hull(&pts)
-            .expect("道具多边形是凸的")
-            .density(kind.mass() / (area_cm2 * CM * CM))
+            .expect("物品形状已经凸包化")
+            .density(def.mass / (area_cm2 * CM * CM))
             .friction(0.8)
             .restitution(0.05)
             .build();
@@ -134,6 +50,14 @@ impl Sim {
             self.physics
                 .colliders
                 .insert_with_parent(collider, handle, &mut self.physics.bodies);
+
+        // 目录下标：按 id 查，查不到就当没有（说明目录变了）
+        let index = self
+            .catalog
+            .items
+            .iter()
+            .position(|d| d.id == def.id)
+            .map(|i| i as u16);
 
         let id = PieceId(self.body.pieces.len() as u32);
         self.body.pieces.push(Piece {
@@ -143,12 +67,19 @@ impl Sim {
             collider,
             polygon,
             centroid: Vec2::ZERO,
-            mass: kind.mass(),
+            mass: def.mass,
             still_s: 0.0,
             frozen_pose: None,
+            item: index,
             deleted: false,
         });
         id
+    }
+
+    /// 按 id 生成（UI 用）。
+    pub fn spawn_item_by_id(&mut self, id: &str, at: Vec2) -> Option<PieceId> {
+        let def = self.catalog.get(id)?.clone();
+        Some(self.spawn_item(&def, at))
     }
 
     /// 这块是不是道具（不是身体的一部分）。
@@ -156,23 +87,29 @@ impl Sim {
         self.body.pieces[id.index()].part == PartId::NONE
     }
 
-    /// 道具种类（按多边形顶点数和质量反推）。渲染用。
-    ///
-    /// 反推而不是存字段，是因为 `Piece` 是切割/物理的核心类型，
-    /// 加一个只给渲染用的字段会让它变脏。四个道具的形状差别够大。
-    pub fn prop_kind(&self, id: PieceId) -> Option<PropKind> {
+    /// 这块对应的物品定义。身体部件返回 `None`。
+    pub fn item_of(&self, id: PieceId) -> Option<&ItemDef> {
+        let idx = self.body.pieces[id.index()].item? as usize;
+        self.catalog.items.get(idx)
+    }
+
+    /// 这块的显示名（道具查目录，身体部件查 plan）。
+    pub fn piece_name(&self, id: PieceId) -> &str {
         let p = &self.body.pieces[id.index()];
-        if p.part != PartId::NONE {
-            return None;
-        }
-        Some(if p.polygon.len() > 6 {
-            PropKind::Ball
-        } else if p.mass > 200.0 {
-            PropKind::Block
-        } else if p.mass < 10.0 {
-            PropKind::Plank
+        if p.part == PartId::NONE {
+            self.item_of(id).map(|d| d.name.as_str()).unwrap_or("道具")
         } else {
-            PropKind::Crate
-        })
+            &self.plan.parts[p.part.index()].name
+        }
+    }
+
+    /// 目录里第一个分类下的第一个物品（测试与默认生成用）。
+    pub fn first_item(&self) -> Option<&ItemDef> {
+        self.catalog.items.first()
+    }
+
+    /// 换一本目录（读档后按 id 重新对齐用）。
+    pub fn reload_catalog(&mut self) {
+        self.catalog = ItemCatalog::asset();
     }
 }

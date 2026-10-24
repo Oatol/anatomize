@@ -1,14 +1,18 @@
 //! UI：People Playground 式的三段布局。
 //!
 //! ```text
-//! ┌────┬───────────────────────────────┬──────────┐
-//! │ 工 │                               │          │
-//! │ 具 │          世界（有边界）        │  物品栏   │
-//! │ 栏 │                               │  + 属性   │
-//! ├────┴───────────────────────────────┴──────────┤
-//! │ 时间条：暂停 · 速度 · 回滚 · 保存/读取 · 新建    │
-//! └───────────────────────────────────────────────┘
+//! ┌──────────┬───────────────────────────┬────┐
+//! │          │                           │ 工 │
+//! │  物品栏   │      世界（有边界）        │ 具 │
+//! │  + 属性   │                           │ 栏 │
+//! ├──────────┴───────────────────────────┴────┤
+//! │ 时间条：暂停 · 速度 · 回滚 · 保存/读取 · 新建 │
+//! └──────────────────────────────────────────┘
 //! ```
+//!
+//! **物品在左、工具在右**：左手选"造什么"，右手选"拿什么"。
+//! 这是用户要求的布局，也是 MaD2 / PP 玩家的肌肉记忆——物品栏是常驻的、
+//! 会一直翻的，工具是偶尔切的，所以把"经常看的"放左边。
 //!
 //! # 为什么是这个布局
 //!
@@ -25,8 +29,8 @@
 //! （`icons.rs`）。egui 默认的按钮在沙盒里太"网页"，图标按钮才像工具。
 
 use anatomize_body::JointState;
-use anatomize_core::{HeatChannel, PartId, Vec2};
-use anatomize_sim::{PieceId, PropKind, WorldBounds};
+use anatomize_core::HeatChannel;
+use anatomize_sim::{ItemDef, PieceId, WorldBounds};
 use egui::{Color32, RichText};
 
 use crate::App;
@@ -51,8 +55,8 @@ pub struct NewWorldDialog {
 
 pub fn layout(ctx: &egui::Context, app: &mut App) {
     timeline(ctx, app);
+    item_panel(ctx, app);
     toolbar(ctx, app);
-    spawn_panel(ctx, app);
     new_world_dialog(ctx, app);
     load_dialog(ctx, app);
 }
@@ -96,7 +100,7 @@ fn load_dialog(ctx: &egui::Context, app: &mut App) {
 // ---------------------------------------------------------------------------
 
 fn toolbar(ctx: &egui::Context, app: &mut App) {
-    egui::SidePanel::left("tools")
+    egui::SidePanel::right("tools")
         .exact_width(60.0)
         .resizable(false)
         .frame(egui::Frame::NONE.fill(c32([24, 23, 30, 255])))
@@ -221,9 +225,9 @@ fn timeline(ctx: &egui::Context, app: &mut App) {
 // 右侧物品栏
 // ---------------------------------------------------------------------------
 
-fn spawn_panel(ctx: &egui::Context, app: &mut App) {
-    egui::SidePanel::right("spawn")
-        .exact_width(232.0)
+fn item_panel(ctx: &egui::Context, app: &mut App) {
+    egui::SidePanel::left("items")
+        .exact_width(268.0)
         .resizable(false)
         .frame(
             egui::Frame::NONE
@@ -231,88 +235,111 @@ fn spawn_panel(ctx: &egui::Context, app: &mut App) {
                 .inner_margin(10),
         )
         .show(ctx, |ui| {
+            // 分类标签
+            ui.horizontal_wrapped(|ui| {
+                for (i, cat) in app.sim.catalog.categories.clone().iter().enumerate() {
+                    let sel = app.item_category == i;
+                    let n = app.sim.catalog.in_category(&cat.id).count();
+                    let label = format!("{} {}", cat.name, n);
+                    let mut txt = RichText::new(label).size(12.0);
+                    if sel {
+                        txt = txt.strong();
+                    }
+                    if ui.selectable_label(sel, txt).clicked() {
+                        app.item_category = i;
+                    }
+                }
+            });
+            ui.separator();
+
+            let cats = app.sim.catalog.categories.clone();
+            let Some(cat) = cats.get(app.item_category) else {
+                return;
+            };
+            let items: Vec<ItemDef> = app.sim.catalog.in_category(&cat.id).cloned().collect();
+
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.label(RichText::new("生成").size(13.0).strong());
-                ui.add_space(4.0);
                 ui.horizontal_wrapped(|ui| {
-                    for k in PropKind::ALL {
-                        if prop_card(ui, k, app.prop_hue).clicked() {
-                            // 生成在视野中心偏下，落在玩家正在看的地方
-                            let at = app.cam.center + Vec2::new(0.0, -0.4);
-                            app.sim.spawn_prop(k, at);
-                            app.say(format!("生成了{}", k.name()));
+                    for def in &items {
+                        if item_card(ui, def).clicked() {
+                            app.spawn_at_cursor(&def.id);
                         }
                     }
                 });
-
-                if !app.has_cjk {
+                if items.is_empty() {
                     ui.label(
-                        RichText::new("没找到中文字体，设 ANATOMIZE_FONT 指定")
-                            .size(10.0)
-                            .color(c32(HOT)),
+                        RichText::new("这个分类还没有物品")
+                            .size(11.0)
+                            .color(c32(FAINT)),
                     );
                 }
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.label(RichText::new("生理").size(13.0).strong());
-                vitals(ui, app);
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.label(RichText::new("关节").size(13.0).strong());
-                joints(ui, app);
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.label(RichText::new("环境").size(13.0).strong());
-                environment(ui, app);
-
-                ui.add_space(8.0);
-                ui.separator();
-                ui.label(RichText::new("显示").size(13.0).strong());
-                display(ui, app);
-
-                if let Some(sel) = app.selected {
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.label(RichText::new("选中").size(13.0).strong());
-                    selected_info(ui, app, sel);
-                }
             });
+
+            ui.add_space(6.0);
+            ui.separator();
+            ui.label(RichText::new("生理").size(12.0).strong());
+            vitals(ui, app);
+            ui.add_space(4.0);
+            ui.label(RichText::new("关节").size(12.0).strong());
+            joints(ui, app);
+            ui.add_space(4.0);
+            ui.label(RichText::new("环境").size(12.0).strong());
+            environment(ui, app);
+            ui.add_space(4.0);
+            ui.label(RichText::new("显示").size(12.0).strong());
+            display(ui, app);
+            if let Some(sel) = app.selected {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.label(RichText::new("选中").size(12.0).strong());
+                selected_info(ui, app, sel);
+            }
         });
 }
 
-/// 一张道具卡片：自绘图标 + 名字 + 质量。
-fn prop_card(ui: &mut egui::Ui, k: PropKind, _hue: f32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(100.0, 62.0), egui::Sense::click());
+/// 一张物品卡片：形状图标 + 名字 + 质量。
+fn item_card(ui: &mut egui::Ui, def: &ItemDef) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(120.0, 68.0), egui::Sense::click());
     let p = ui.painter();
     let bg = if resp.hovered() {
-        c32([44, 43, 54, 255])
+        c32([46, 44, 56, 255])
     } else {
         c32([32, 31, 40, 255])
     };
     p.rect_filled(rect, 5.0, bg);
-    icons::prop_icon(
+    icons::item_icon(
         p,
-        egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), egui::vec2(28.0, 28.0)),
-        k,
+        egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 6.0), egui::vec2(34.0, 34.0)),
+        def,
     );
     p.text(
-        rect.min + egui::vec2(40.0, 8.0),
+        rect.min + egui::vec2(46.0, 8.0),
         egui::Align2::LEFT_TOP,
-        k.name(),
+        &def.name,
         egui::FontId::proportional(13.0),
         c32(INK),
     );
     p.text(
-        rect.min + egui::vec2(40.0, 26.0),
+        rect.min + egui::vec2(46.0, 26.0),
         egui::Align2::LEFT_TOP,
-        format!("{:.0} kg", k.mass()),
+        format!("{:.1} kg", def.mass),
         egui::FontId::proportional(10.0),
         c32(FAINT),
     );
-    resp
+    if !def.desc.is_empty() {
+        p.text(
+            rect.min + egui::vec2(8.0, 48.0),
+            egui::Align2::LEFT_TOP,
+            &def.desc,
+            egui::FontId::proportional(9.0),
+            c32(FAINT),
+        );
+    }
+    resp.on_hover_text(format!(
+        "{} · {:.1} kg
+{}",
+        def.name, def.mass, def.desc
+    ))
 }
 
 fn vitals(ui: &mut egui::Ui, app: &mut App) {
@@ -468,30 +495,25 @@ fn selected_info(ui: &mut egui::Ui, app: &mut App, sel: PieceId) {
         return;
     }
     // 先把要显示的东西抄出来，再画——否则 `&app.sim` 和 `&mut app` 打架
-    let (deleted, frozen, mass, verts, is_prop, part) = {
+    let (deleted, frozen, mass, verts) = {
         let p = &app.sim.body.pieces[sel.index()];
-        (
-            p.deleted,
-            p.is_frozen(),
-            p.mass,
-            p.polygon.len(),
-            p.part == PartId::NONE,
-            p.part,
-        )
+        (p.deleted, p.is_frozen(), p.mass, p.polygon.len())
     };
     if deleted {
         app.selected = None;
         return;
     }
-    let name = if is_prop {
-        app.sim
-            .prop_kind(sel)
-            .map(|k| k.name().to_string())
-            .unwrap_or_else(|| "道具".into())
-    } else {
-        app.sim.plan.parts[part.index()].name.clone()
-    };
+    let name = app.sim.piece_name(sel).to_string();
+    let desc = app
+        .sim
+        .item_of(sel)
+        .map(|d| d.desc.clone())
+        .unwrap_or_default();
+
     ui.label(RichText::new(name).size(12.0).color(c32(INK)));
+    if !desc.is_empty() {
+        ui.label(RichText::new(desc).size(10.0).color(c32(DIM)));
+    }
     ui.label(
         RichText::new(format!(
             "质量 {:.1} kg · {verts} 顶点 · {}",

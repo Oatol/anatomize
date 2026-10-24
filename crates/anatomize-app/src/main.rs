@@ -61,8 +61,8 @@ pub struct App {
     pub load_menu: Option<Vec<String>>,
     /// 平滑后的帧率。
     pub fps: f32,
-    /// 道具卡片的色相抖动（暂时没用，留给以后）。
-    pub prop_hue: f32,
+    /// 当前选中的物品分类下标。
+    pub item_category: usize,
 }
 
 impl App {
@@ -85,12 +85,13 @@ impl App {
         let world = WorldBounds::default();
         let mut sim = Sim::spawn_in(plan, Vec2::new(0.0, world.stand_height()), world);
         sim.attach_tissue(&TissueConfig::asset());
-        sim.enable_posture();
-
-        // 落地站稳：让关节在下垂之后稳定下来，再交给玩家
-        for _ in 0..120 {
+        // **先落地稳定，再开姿态控制。**
+        // 顺序反过来的话，目标角取的是"刚装配好、还没下沉"的姿态，
+        // 之后身体下沉 5~10cm，PD 一直在追一个追不上的目标 —— 视觉上就是抽搐。
+        for _ in 0..150 {
             sim.step();
         }
+        sim.enable_posture();
 
         Self {
             sim,
@@ -109,7 +110,7 @@ impl App {
             new_world: ui::NewWorldDialog::default(),
             load_menu: None,
             fps: 60.0,
-            prop_hue: 0.0,
+            item_category: 0,
         }
     }
 
@@ -176,15 +177,17 @@ impl App {
             }
             Tool::Hammer => {
                 if let Some(i) = self.piece_at(drag.from) {
-                    let part = self.sim.body.pieces[i].part;
-                    let name = self.sim.plan.parts[part.index()].name.clone();
-                    let (pos, _) = self.sim.piece_pose(PieceId(i as u32));
-                    let off = drag.from - pos;
-                    // 冲量方向 = 从鼠标指向部件中心（"往里砸"）
+                    let id = PieceId(i as u32);
+                    let (pos, _) = self.sim.piece_pose(id);
+                    // 冲量方向 = 从鼠标指向质心（"往里砸"）
                     let dir = (pos - drag.from).normalize_or_zero();
-                    let impulse = dir * 60.0;
-                    self.sim.strike_part(&name, impulse, off * 100.0);
-                    self.say(format!("砸了 {name} 一下"));
+                    let impulse = dir * 110.0;
+                    if self.sim.strike_piece(id, impulse, drag.from) {
+                        let what = self.piece_label(id);
+                        self.say(format!("砸了{what}一下"));
+                    } else {
+                        self.say("这块动不了（已冻结或已删除）");
+                    }
                 }
             }
             Tool::Hand | Tool::Select => {
@@ -207,6 +210,11 @@ impl App {
                 }
             }
         }
+    }
+
+    /// 一块的人话名字（HUD / 提示用）。
+    pub fn piece_label(&self, id: PieceId) -> String {
+        self.sim.piece_name(id).to_string()
     }
 
     /// 鼠标位置下最上层的块。
@@ -307,20 +315,33 @@ impl App {
                 self.sim.sever_joint("hip_r");
             }
             shot::Action::Props => {
-                use anatomize_sim::PropKind;
                 let c = self.cam.center;
-                self.sim
-                    .spawn_prop(PropKind::Crate, c + Vec2::new(0.9, -0.4));
-                self.sim
-                    .spawn_prop(PropKind::Ball, c + Vec2::new(-0.9, -0.3));
-                self.sim
-                    .spawn_prop(PropKind::Plank, c + Vec2::new(0.0, 0.4));
-                self.sim
-                    .spawn_prop(PropKind::Block, c + Vec2::new(1.3, -0.4));
+                for (id, off) in [
+                    ("crate", Vec2::new(0.9, -0.4)),
+                    ("ball", Vec2::new(-0.9, -0.3)),
+                    ("plank", Vec2::new(0.0, 0.5)),
+                    ("knife", Vec2::new(-0.5, 0.2)),
+                ] {
+                    self.sim.spawn_item_by_id(id, c + off);
+                }
                 self.selected = Some(anatomize_sim::PieceId(
                     (self.sim.body.pieces.len() - 1) as u32,
                 ));
             }
+        }
+    }
+
+    /// 在视野中心生成一个物品。
+    pub fn spawn_at_cursor(&mut self, item_id: &str) {
+        let at = self.cam.center + Vec2::new(0.0, -0.4);
+        if self.sim.spawn_item_by_id(item_id, at).is_some() {
+            let name = self
+                .sim
+                .catalog
+                .get(item_id)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| item_id.to_string());
+            self.say(format!("生成了{name}"));
         }
     }
 
@@ -329,10 +350,10 @@ impl App {
         let plan = BodyPlan::from_ron(ASSET_HUMAN_01).expect("内置人体计划解析失败");
         let mut sim = Sim::spawn_in(plan, Vec2::new(0.0, world.stand_height()), world);
         sim.attach_tissue(&TissueConfig::asset());
-        sim.enable_posture();
-        for _ in 0..120 {
+        for _ in 0..150 {
             sim.step();
         }
+        sim.enable_posture();
         self.sim = sim;
         self.selected = None;
         self.cam = Camera {

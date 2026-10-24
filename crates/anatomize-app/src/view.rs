@@ -124,6 +124,12 @@ impl View<'_> {
         let step = 2usize;
         let texel = f.texel_cm * 0.01;
         let cell = texel * step as f32;
+        // 场钉在**身体坐标系**里，所以画的时候要跟着身体转。
+        // 不转的话人躺下了、热力图还竖着——那就是"贴了张图"。
+        let rot = self.sim.body_rotation();
+        let (sin, cos) = rot.sin_cos();
+        let to_world =
+            |lx: f32, ly: f32| anchor + Vec2::new(lx * cos - ly * sin, lx * sin + ly * cos);
 
         for y in (0..f.h as usize).step_by(step) {
             for x in (0..f.w as usize).step_by(step) {
@@ -138,17 +144,24 @@ impl View<'_> {
                     HeatChannel::Damage => f.damage[i],
                 };
                 let c = ch.color(ch.normalize(v));
-                let p = anchor
-                    + Vec2::new(
-                        f.origin.x * 0.01 + x as f32 * texel,
-                        f.origin.y * 0.01 + y as f32 * texel,
-                    );
-                let a = self.cam.to_screen(p, view);
-                let b = self.cam.to_screen(p + Vec2::new(cell, cell), view);
-                let r = Rect::from_two_pos(a, b);
-                if view.intersects(r) {
-                    painter.rect_filled(r, 0.0, c32a(c, 150));
+                let lx = f.origin.x * 0.01 + x as f32 * texel;
+                let ly = f.origin.y * 0.01 + y as f32 * texel;
+                // 四个角都转，不然方块会跟着转成平行四边形
+                let s0 = self.cam.to_screen(to_world(lx, ly), view);
+                let s2 = self.cam.to_screen(to_world(lx + cell, ly + cell), view);
+                if !view.intersects(Rect::from_two_pos(s0, s2)) {
+                    continue;
                 }
+                painter.add(Shape::convex_polygon(
+                    vec![
+                        s0,
+                        self.cam.to_screen(to_world(lx + cell, ly), view),
+                        s2,
+                        self.cam.to_screen(to_world(lx, ly + cell), view),
+                    ],
+                    c32a(c, 150),
+                    Stroke::NONE,
+                ));
             }
         }
     }
@@ -161,6 +174,9 @@ impl View<'_> {
 
     fn paint_piece(&self, painter: &Painter, view: Rect, id: PieceId) {
         let piece = &self.sim.body.pieces[id.index()];
+        if piece.deleted {
+            return;
+        }
         let world_poly = self.sim.piece_polygon(id);
         if world_poly.len() < 3 {
             return;
@@ -171,8 +187,8 @@ impl View<'_> {
         if piece.part == anatomize_core::PartId::NONE {
             let c = self
                 .sim
-                .prop_kind(id)
-                .map(|k| k.color())
+                .item_of(id)
+                .map(|d| d.rgba())
                 .unwrap_or([140, 140, 145, 255]);
             self.fill(painter, view, &world_poly, c, alpha);
             let mut closed: Vec<Pos2> = world_poly
@@ -283,6 +299,12 @@ impl View<'_> {
 
     fn paint_joints(&self, painter: &Painter, view: Rect) {
         for j in &self.sim.body.joints {
+            // 连着已删除块的关节不画——它的锚点已经失效了
+            if self.sim.body.pieces[j.a.index()].deleted
+                || self.sim.body.pieces[j.b.index()].deleted
+            {
+                continue;
+            }
             let (pa, _) = self.sim.joint_world_anchors(j);
             let s = self.cam.to_screen(pa, view);
             let c = match j.health.state {

@@ -145,7 +145,7 @@ impl Sim {
             .pieces
             .iter()
             .enumerate()
-            .filter(|(_, p)| !p.is_frozen())
+            .filter(|(_, p)| !p.is_frozen() && !p.deleted)
             .map(|(i, _)| PieceId(i as u32))
             .collect();
 
@@ -344,6 +344,7 @@ impl Sim {
                     mass: frag.mass,
                     still_s: 0.0,
                     frozen_pose: None,
+                    item: None,
                     deleted: false,
                 });
                 id
@@ -466,7 +467,7 @@ impl Sim {
         let cfg = self.fracture;
         let mut frozen = 0;
         for i in 0..self.body.pieces.len() {
-            if self.body.pieces[i].is_frozen() {
+            if self.body.pieces[i].is_frozen() || self.body.pieces[i].deleted {
                 continue;
             }
             let h = self.body.pieces[i].body;
@@ -517,7 +518,7 @@ impl Sim {
         let max = self.fracture.max_speed;
         let mut clamped = 0;
         for p in &self.body.pieces {
-            if p.is_frozen() {
+            if p.is_frozen() || p.deleted {
                 continue;
             }
             let rb = &mut self.physics.bodies[p.body];
@@ -567,18 +568,24 @@ impl Sim {
             .collect()
     }
 
-    /// 一块碎片的世界位姿（米 / 弧度）。冻结的读快照。
+    /// 一块碎片的世界位姿（米 / 弧度）。冻结的读快照，删除的返回零。
     pub fn piece_pose(&self, id: PieceId) -> (Vec2, f32) {
         let p = &self.body.pieces[id.index()];
         if let Some(pose) = p.frozen_pose {
             return pose;
         }
-        let rb = &self.physics.bodies[p.body];
-        let pos = *rb.position();
-        (
-            Vec2::new(pos.translation.x, pos.translation.y),
-            pos.rotation.angle(),
-        )
+        // 删除的块没有刚体。返回零而不是 panic——渲染和诊断都会问"这块在哪"，
+        // 它们不该因为一块被删掉就崩掉整个程序。
+        match self.physics.bodies.get(p.body) {
+            Some(rb) => {
+                let pos = *rb.position();
+                (
+                    Vec2::new(pos.translation.x, pos.translation.y),
+                    pos.rotation.angle(),
+                )
+            }
+            None => (Vec2::ZERO, 0.0),
+        }
     }
 
     /// 把一块往某个世界点拉（手工具）。
@@ -590,10 +597,12 @@ impl Sim {
     /// `gain` 是力度倍率，1.0 大约等于"100ms 内到位"。
     pub fn pull_piece(&mut self, id: PieceId, target: Vec2, gain: f32) {
         let p = &self.body.pieces[id.index()];
-        if p.is_frozen() {
+        if p.is_frozen() || p.deleted {
             return;
         }
-        let rb = &mut self.physics.bodies[p.body];
+        let Some(rb) = self.physics.bodies.get_mut(p.body) else {
+            return;
+        };
         let pos = rb.position().translation;
         let d = target - Vec2::new(pos.x, pos.y);
         // 时间常数 0.10s：跟手，但不至于把速度拉爆
@@ -605,14 +614,19 @@ impl Sim {
         rb.set_linvel(rv(v), true);
     }
 
-    /// 一块碎片的世界线速度（m/s）。冻结的返回零。
+    /// 一块碎片的世界线速度（m/s）。冻结或删除的返回零。
     pub fn piece_velocity(&self, id: PieceId) -> Vec2 {
         let p = &self.body.pieces[id.index()];
-        if p.is_frozen() {
+        if p.is_frozen() || p.deleted {
             return Vec2::ZERO;
         }
-        let v = self.physics.bodies[p.body].linvel();
-        Vec2::new(v.x, v.y)
+        match self.physics.bodies.get(p.body) {
+            Some(rb) => {
+                let v = rb.linvel();
+                Vec2::new(v.x, v.y)
+            }
+            None => Vec2::ZERO,
+        }
     }
 
     /// 部件的主块。

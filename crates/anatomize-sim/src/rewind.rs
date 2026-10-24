@@ -188,12 +188,17 @@ impl Sim {
         for i in 0..self.body.pieces.len() {
             let p = &self.body.pieces[i];
             let (pos, rot) = self.piece_pose(PieceId(i as u32));
-            let (linvel, angvel) = if p.is_frozen() {
+            // 冻结和删除的块都没有刚体
+            let (linvel, angvel) = if p.is_frozen() || p.deleted {
                 (Vec2::ZERO, 0.0)
             } else {
-                let rb = &self.physics.bodies[p.body];
-                let v = rb.linvel();
-                (Vec2::new(v.x, v.y), rb.angvel())
+                match self.physics.bodies.get(p.body) {
+                    Some(rb) => {
+                        let v = rb.linvel();
+                        (Vec2::new(v.x, v.y), rb.angvel())
+                    }
+                    None => (Vec2::ZERO, 0.0),
+                }
             };
             pieces.push(PieceSave {
                 part: p.part,
@@ -204,6 +209,7 @@ impl Sim {
                 rot,
                 linvel,
                 angvel,
+                item: p.item,
                 frozen: p.is_frozen(),
             });
         }
@@ -281,6 +287,7 @@ impl Sim {
                     mass: ps.mass,
                     still_s: 0.0,
                     frozen_pose: Some((ps.pos, ps.rot)),
+                    item: ps.item,
                     deleted: false,
                 });
                 continue;
@@ -325,6 +332,7 @@ impl Sim {
                 mass: ps.mass,
                 still_s: 0.0,
                 frozen_pose: None,
+                item: None,
                 deleted: false,
             });
         }

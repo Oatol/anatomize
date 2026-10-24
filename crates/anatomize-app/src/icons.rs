@@ -122,35 +122,44 @@ fn dashed_rect(p: &Painter, r: Rect, c: Color32) {
     }
 }
 
-/// 道具的小图标（物品栏用）。48×48 的框里画一个形状。
-pub fn prop_icon(p: &Painter, r: Rect, kind: anatomize_sim::PropKind) {
-    let c = Color32::from_rgba_unmultiplied(kind.color()[0], kind.color()[1], kind.color()[2], 255);
-    let pt = |x: f32, y: f32| Pos2::new(r.left() + x * r.width(), r.top() + y * r.height());
-    match kind {
-        anatomize_sim::PropKind::Crate => {
-            p.rect_filled(Rect::from_min_max(pt(0.15, 0.15), pt(0.85, 0.85)), 2.0, c);
-            let ink = Stroke::new(1.2_f32, Color32::from_rgb(40, 30, 22));
-            p.line_segment([pt(0.15, 0.15), pt(0.85, 0.85)], ink);
-            p.line_segment([pt(0.85, 0.15), pt(0.15, 0.85)], ink);
-        }
-        anatomize_sim::PropKind::Ball => {
-            p.circle_filled(pt(0.5, 0.5), r.width() * 0.36, c);
-            p.circle_stroke(
-                pt(0.5, 0.5),
-                r.width() * 0.36,
-                Stroke::new(1.2_f32, Color32::from_rgb(40, 42, 46)),
-            );
-        }
-        anatomize_sim::PropKind::Plank => {
-            p.rect_filled(Rect::from_min_max(pt(0.05, 0.38), pt(0.95, 0.62)), 2.0, c);
-        }
-        anatomize_sim::PropKind::Block => {
-            p.rect_filled(Rect::from_min_max(pt(0.12, 0.22), pt(0.88, 0.82)), 2.0, c);
-            let ink = Stroke::new(1.0_f32, Color32::from_rgb(70, 70, 74));
-            for i in 1..3 {
-                let y = 0.22 + i as f32 * 0.2;
-                p.line_segment([pt(0.12, y), pt(0.88, y)], ink);
-            }
-        }
+/// 物品的小图标：按它的实际形状画一个轮廓。
+///
+/// 不画贴图，因为物品是数据驱动的（`assets/items.ron`）——加了新物品
+/// 不用配图标，形状就是图标。
+pub fn item_icon(p: &Painter, r: Rect, def: &anatomize_sim::ItemDef) {
+    let c = Color32::from_rgba_unmultiplied(def.color.0, def.color.1, def.color.2, 255);
+    let poly = def.shape.polygon();
+    if poly.len() < 3 {
+        return;
     }
+    // 归一化到 r 里，保持长宽比
+    let (mut lo, mut hi) = (
+        egui::pos2(f32::INFINITY, f32::INFINITY),
+        egui::pos2(f32::NEG_INFINITY, f32::NEG_INFINITY),
+    );
+    for v in &poly {
+        lo.x = lo.x.min(v.x);
+        lo.y = lo.y.min(v.y);
+        hi.x = hi.x.max(v.x);
+        hi.y = hi.y.max(v.y);
+    }
+    let (w, h) = ((hi.x - lo.x).max(1.0), (hi.y - lo.y).max(1.0));
+    let scale = (r.width() / w).min(r.height() / h) * 0.86;
+    let cx = (lo.x + hi.x) * 0.5;
+    let cy = (lo.y + hi.y) * 0.5;
+    let pts: Vec<Pos2> = poly
+        .iter()
+        .map(|v| {
+            Pos2::new(
+                r.center().x + (v.x - cx) * scale,
+                // 物品坐标 y 向上，屏幕 y 向下
+                r.center().y - (v.y - cy) * scale,
+            )
+        })
+        .collect();
+    p.add(Shape::convex_polygon(
+        pts.clone(),
+        c,
+        Stroke::new(1.0_f32, Color32::from_rgb(24, 22, 28)),
+    ));
 }

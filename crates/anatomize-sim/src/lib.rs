@@ -6,6 +6,7 @@
 //! 本 crate 依赖 rapier2d，但不依赖 Bevy —— 渲染是别人的事。
 
 pub mod edit;
+pub mod items;
 pub mod fracture;
 pub mod props;
 pub mod rewind;
@@ -13,7 +14,7 @@ pub mod save;
 pub mod sever;
 
 pub use fracture::{FractureConfig, SliceReport};
-pub use props::PropKind;
+pub use items::{Category, ItemCatalog, ItemDef, Shape};
 pub use rewind::{Rewind, Snapshot};
 pub use save::{SAVE_VERSION, SaveFile};
 pub use sever::{SeverOutcome, apply_cut, build_tissue, layer_kind};
@@ -206,6 +207,8 @@ pub struct Piece {
     /// 冻结后的位姿（世界米 + 弧度）。冻结的块已经从物理世界摘掉，
     /// 没有刚体可查，但渲染还要画它。
     pub frozen_pose: Option<(Vec2, f32)>,
+    /// 物品目录里的下标。`None` = 身体的一部分（走解剖分层渲染）。
+    pub item: Option<u16>,
     /// 被删除工具移除。刚体已经没了，渲染也跳过。
     ///
     /// 不做 `Vec::remove` 是因为 `PieceId` 就是下标——删一个会让后面所有
@@ -242,6 +245,8 @@ pub struct Sim {
     ground_y: f32,
     /// 世界大小（米）。边界墙按它建。
     pub world: WorldBounds,
+    /// 物品目录（外置 RON）。道具的渲染颜色、名字、分类都查它。
+    pub catalog: ItemCatalog,
     /// 关节损伤参数（来自 `assets/config/damage.ron`）。
     pub damage: JointParams,
     /// 累计发生过的状态迁移，按发生顺序。HUD / 日志 / 验收图都读它。
@@ -448,6 +453,7 @@ impl Sim {
                 mass: p.mass,
                 still_s: 0.0,
                 frozen_pose: None,
+                item: None,
                 deleted: false,
             })
             .collect();
@@ -466,6 +472,7 @@ impl Sim {
             ground,
             ground_y,
             world,
+            catalog: ItemCatalog::asset(),
             damage,
             injuries: Vec::new(),
             tissue: None,
@@ -581,6 +588,23 @@ impl Sim {
         true
     }
 
+    /// 直接打某一块（道具和身体部件都能打）。
+    ///
+    /// `strike_part` 是按**名字**找部件，道具没有名字（`part == NONE`），
+    /// 所以工具层需要这个按编号的入口。
+    pub fn strike_piece(&mut self, id: PieceId, impulse: Vec2, at_world: Vec2) -> bool {
+        let p = &self.body.pieces[id.index()];
+        if p.deleted || p.is_frozen() {
+            return false;
+        }
+        let Some(rb) = self.physics.bodies.get_mut(p.body) else {
+            return false;
+        };
+        // 冲量已经是世界方向；作用点用世界坐标
+        rb.apply_impulse_at_point(rv(impulse), rv(at_world), true);
+        true
+    }
+
     /// 打开姿态控制，目标取当前姿态（"保持住"）。
     pub fn enable_posture(&mut self) {
         self.posture = Some(Posture::holding(self));
@@ -633,7 +657,15 @@ impl Sim {
                 self.physics.bodies[ha].angvel(),
                 self.physics.bodies[hb].angvel(),
             );
-            let tau = (stiff * err - damp * (wb - wa)) * guard;
+            let dw = wb - wa;
+            // 死区：误差和角速度都很小的时候不出力。
+            //
+            // 没有死区的话，PD 会一直追着浮点级别的残差推，而关节限位一直在
+            // 往回拉 —— 两边对推的结果就是静止的 ragdoll 肉眼可见地抖。
+            if err.abs() < 0.010 && dw.abs() < 0.06 {
+                continue;
+            }
+            let tau = (stiff * err - damp * dw) * guard;
             if !tau.is_finite() {
                 continue;
             }
@@ -985,9 +1017,12 @@ impl Sim {
         let local_m = rv((part_local_cm - p.centroid) * CM);
         let w = match p.frozen_pose {
             Some((pos, rot)) => Rot2::from_angle(rot) * local_m + rv(pos),
-            None => self.physics.bodies[p.body]
-                .position()
-                .transform_point(local_m),
+            // 删除的块没有刚体也没有位姿。返回零向量，调用方（渲染、诊断）
+            // 会画在原点——难看，但不会把整个程序崩掉。
+            None => match self.physics.bodies.get(p.body) {
+                Some(rb) => rb.position().transform_point(local_m),
+                None => RVec2::ZERO,
+            },
         };
         Vec2::new(w.x, w.y)
     }
@@ -1007,7 +1042,12 @@ impl Sim {
         let mut nan = false;
         // 冻结的块已经不在物理世界里了（刚体被摘掉），读它就会越界。
         // 它们的速度是 0，对动能和最大速度都没有贡献，直接跳过。
-        for p in self.body.pieces.iter().filter(|p| !p.is_frozen()) {
+        for p in self
+            .body
+            .pieces
+            .iter()
+            .filter(|p| !p.is_frozen() && !p.deleted)
+        {
             let rb = &self.physics.bodies[p.body];
             let v = rb.linvel().length();
             ke += 0.5 * rb.mass() * v * v;

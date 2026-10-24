@@ -48,6 +48,9 @@ pub struct PieceSave {
     pub rot: f32,
     pub linvel: Vec2,
     pub angvel: f32,
+    /// 物品目录下标。`None` = 身体的一部分。
+    #[serde(default)]
+    pub item: Option<u16>,
     /// 已冻结的块没有刚体，位姿就在 `pos/rot` 里。
     pub frozen: bool,
 }
@@ -113,12 +116,16 @@ impl Sim {
         for i in 0..self.body.pieces.len() {
             let p = &self.body.pieces[i];
             let (pos, rot) = self.piece_pose(PieceId(i as u32));
-            let (linvel, angvel) = if p.is_frozen() {
+            let (linvel, angvel) = if p.is_frozen() || p.deleted {
                 (Vec2::ZERO, 0.0)
             } else {
-                let rb = &self.physics.bodies[p.body];
-                let v = rb.linvel();
-                (Vec2::new(v.x, v.y), rb.angvel())
+                match self.physics.bodies.get(p.body) {
+                    Some(rb) => {
+                        let v = rb.linvel();
+                        (Vec2::new(v.x, v.y), rb.angvel())
+                    }
+                    None => (Vec2::ZERO, 0.0),
+                }
             };
             pieces.push(PieceSave {
                 part: p.part,
@@ -129,6 +136,7 @@ impl Sim {
                 rot,
                 linvel,
                 angvel,
+                item: p.item,
                 frozen: p.is_frozen(),
             });
         }
@@ -230,6 +238,7 @@ impl Sim {
                     mass: ps.mass,
                     still_s: 0.0,
                     frozen_pose: Some((ps.pos, ps.rot)),
+                    item: ps.item,
                     deleted: false,
                 });
                 let _ = id;
@@ -270,6 +279,7 @@ impl Sim {
                 mass: ps.mass,
                 still_s: 0.0,
                 frozen_pose: None,
+                item: None,
                 deleted: false,
             });
         }
