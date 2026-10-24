@@ -4,11 +4,15 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：**M0 完成** — workspace 骨架 + rapier2d 直驱 + 11 部件 ragdoll，headless 跑通并渲染出帧。
+> 状态：**M1 完成** — ragdoll 稳定落地，切割管线（裁剪 / 凸分解 / 切面求交）全部通过 fuzz。
 
 ![M0 ragdoll](docs/m0-ragdoll.png)
 
 <sub>M0 输出：11 部件 / 10 关节 / 79.8 kg。落地静止后关节最大间隙 0.85 mm。</sub>
+
+![M1 cut](docs/m1-cut.png)
+
+<sub>M1 输出：3 刀切出 14 块碎片，整体面积 3962.8 → 3962.8 cm²（误差 0.00000%）。暗红折线是股动脉，黄点是切口与血管的交点。</sub>
 
 ---
 
@@ -52,16 +56,26 @@
 ## 快速开始
 
 ```bash
-cargo run -p anatomize-tools --bin ragdoll
+cargo run -p anatomize-tools --bin ragdoll     # M0：ragdoll 稳定性
+cargo run -p anatomize-tools --bin cut_demo    # M1：切割与结构求交
 ```
 
-headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
+`ragdoll` headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
 
 ```
 关节最大间隙 0.847 mm（阈值 2.0 mm）-> PASS
 末态动能 0.0000 J（阈值 0.05 J，说明已静止）-> PASS
 无 NaN -> PASS
 最大速度 0.000 m/s（阈值 50 m/s）-> PASS
+```
+
+`cut_demo` 对 torso / thigh_l / upper_arm_r 各切一刀，校验面积守恒并输出碎片图：
+
+```
+总计 14 块碎片，整体面积 3962.8 -> 3962.8 cm²（误差 0.00000%）
+
+结构求交：股动脉折线 vs 大腿切口 -> 1 处命中
+  命中于段 0  s=0.80  (-0.064, -0.250) m
 ```
 
 不需要窗口、不需要 GPU —— 这是核心与宿主解耦的直接好处。
@@ -92,7 +106,7 @@ headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳
 | 阶段 | 交付物 |
 |---|---|
 | ✅ M0 | workspace 骨架、rapier2d 直驱、11 部件 ragdoll、固定 tick |
-| M1 | 多边形裁剪 + 凸分解 + 切面折线 |
+| ✅ M1 | 多边形裁剪 + 凸分解 + 切面折线（12 测试，含 10000 次 fuzz） |
 | M2 | 组织场：压力求解 + 灌注 + 创口通量 |
 | M3 | 关节三级状态机 + 结构求交 |
 | M4 | 循环 / 呼吸 / 神经闭环 |

@@ -5,12 +5,10 @@
 //!
 //! 输出：`out/ragdoll_<tick>.png`，以及终端的关节间隙/能量/速度统计。
 
-mod render;
-
 use anatomize_body::{ASSET_HUMAN_01, BodyPlan};
 use anatomize_core::Vec2;
 use anatomize_sim::Sim;
-use render::Canvas;
+use anatomize_tools::render::Canvas;
 
 const W: u32 = 480;
 const H: u32 = 480;

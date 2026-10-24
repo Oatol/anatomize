@@ -9,8 +9,13 @@ description = "离线工具：headless 实验、帧渲染、资产校验"
 anatomize-core = { path = "../anatomize-core" }
 anatomize-body = { path = "../anatomize-body" }
 anatomize-sim = { path = "../anatomize-sim" }
+anatomize-cut = { path = "../anatomize-cut" }
 png = "0.18.1"
 
 [[bin]]
 name = "ragdoll"
 path = "src/main.rs"
+
+[[bin]]
+name = "cut_demo"
+path = "src/bin/cut_demo.rs"
