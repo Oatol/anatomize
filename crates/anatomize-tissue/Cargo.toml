@@ -7,3 +7,5 @@ description = "组织场：压力、灌注、氧合、温度、损伤"
 
 [dependencies]
 anatomize-core = { path = "../anatomize-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+ron = "0.12.2"

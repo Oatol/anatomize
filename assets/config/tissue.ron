@@ -1,0 +1,65 @@
+// tissue.ron — 组织场参数。
+//
+// 单位约定见 crates/anatomize-tissue/src/lib.rs 顶部。
+// 改任何一个数之前，先看 config.rs 里对应字段的注释和 tests:: 里的回归断言。
+//
+// 标定目标（不是"真值"，是"看起来对"）：
+//   · MAP 93 时无创口稳态组织压约 42 mmHg
+//   · 全身动脉流入约 83 mL/s（= 5 L/min 心输出量），M4 拿 CO 来对账时量级才对得上
+//   · 大腿 10cm 长的贯通创口约 8 mL/s（≈500 mL/min，几分钟内开始失代偿）
+//   · 正常灌注下组织氧分压 30–60 mmHg
+//   · 断血后器官 5–10 分钟内损伤接近 1（肌肉慢得多）
+//
+// 一个已知的 2D 简化：二维场取 1cm 厚，一具人体的"体积"只有约 2 L，却按全身
+// 5 L/min 标定流量。所以逐 texel 的 perfusion 数值偏高约一个数量级，
+// 这部分偏差被 o2_gain 吸收了。M4 若要严格对账，需要乘一个 2D→3D 折算系数。
+
+(
+    texel_cm: 0.5,
+    jacobi_iters: 8,
+
+    // 血管床电导（mL/(s·mmHg)），决定灌注与出血
+    k0: (
+        outside: 0.0,
+        skin:    6.0e-5,
+        fat:     4.0e-5,
+        muscle:  2.3e-4,
+        bone:    1.5e-5,
+        organ:   1.2e-3,
+        air:     2.0e-6,
+    ),
+    // 组织间连通只占血管床的一小部分——组织间液流动本来就远小于毛细血管流
+    k_inter_ratio: 0.1,
+    arterial_share: 0.45,
+    p_venous: 5.0,
+    // 断端电导放大：一刀砍断大血管，流失的是整条下游区域的血
+    wound_vessel_boost: 20.0,
+
+    p_arterial_o2: 95.0,
+    o2_gain: 0.03,
+    vo2: (
+        outside: 0.0,
+        skin:    0.020,
+        fat:     0.010,
+        muscle:  0.030,
+        bone:    0.005,
+        organ:   0.100,
+        air:     0.0,
+    ),
+
+    thermal_alpha: 0.0013,
+    thermal_blood: 0.5,
+    metab_heat: 3.6e-4,
+    env_coupling: 7.0e-4,
+    ambient_c: 22.0,
+    blood_c: 37.0,
+
+    hypoxia_damage: 0.004,
+    o2_threshold: 10.0,
+    cold_damage: 0.001,
+    heat_damage: 0.02,
+    conductance_falloff: 2.0,
+
+    bone_core_ratio: 0.45,
+    wound_radius_cm: 0.6,
+)

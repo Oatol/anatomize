@@ -4,7 +4,7 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：**M1 完成** — ragdoll 稳定落地，切割管线（裁剪 / 凸分解 / 切面求交）全部通过 fuzz。
+> 状态：**M2 完成** — 组织场求解器跑通：出血速率是达西通量算出来的，随 MAP 严格线性。
 
 ![M0 ragdoll](docs/m0-ragdoll.png)
 
@@ -13,6 +13,10 @@
 ![M1 cut](docs/m1-cut.png)
 
 <sub>M1 输出：3 刀切出 14 块碎片，整体面积 3962.8 → 3962.8 cm²（误差 0.00000%）。暗红折线是股动脉，黄点是切口与血管的交点。</sub>
+
+![M2 tissue](docs/m2-tissue.png)
+
+<sub>M2 输出。**上排**：大腿横断 90 秒后。压力场几乎均匀（设计如此，组织间连通只有血管床的 1/10），唯一的坑在创口；灌注面板里发黑的是骨芯；出血 4.32 mL/s。**下排**：把左腿血供切断后 1200 秒——灌注归零 → 氧分压从 40 掉到 5 mmHg → 损伤累积到 0.23，整条腿在四个通道上依次塌下去。</sub>
 
 ---
 
@@ -56,8 +60,9 @@
 ## 快速开始
 
 ```bash
-cargo run -p anatomize-tools --bin ragdoll     # M0：ragdoll 稳定性
-cargo run -p anatomize-tools --bin cut_demo    # M1：切割与结构求交
+cargo run -p anatomize-tools --bin ragdoll       # M0：ragdoll 稳定性
+cargo run -p anatomize-tools --bin cut_demo      # M1：切割与结构求交
+cargo run -p anatomize-tools --bin tissue_demo   # M2：组织场求解器
 ```
 
 `ragdoll` headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
@@ -78,6 +83,19 @@ cargo run -p anatomize-tools --bin cut_demo    # M1：切割与结构求交
   命中于段 0  s=0.80  (-0.064, -0.250) m
 ```
 
+`tissue_demo` 把 human_01 光栅化成 2.4 万 texel 的组织场，扫 MAP 看出血通量：
+
+```
+组织场 96×257 = 24672 texel（texel 0.50 cm），其中组织 texel 14972
+  无创口稳态：组织压 44.60 mmHg，全身动脉流入 55.78 mL/s，组织氧 39.90 mmHg
+
+     MAP    Q (mL/s)         Q/MAP
+    40.0      1.8602      0.046504
+    93.0      4.3232      0.046486
+   140.0      6.5074      0.046481
+  拟合 Q = 0.046472·MAP + 0.001293，最大偏离 0.000%
+```
+
 不需要窗口、不需要 GPU —— 这是核心与宿主解耦的直接好处。
 
 ## 代码结构
@@ -86,7 +104,7 @@ cargo run -p anatomize-tools --bin cut_demo    # M1：切割与结构求交
 |---|---|---|
 | `anatomize-core` | ID、时间、确定性随机、伤害事件 | 否 |
 | `anatomize-body` | `BodyPlan` schema、编译、校验 | 否 |
-| `anatomize-tissue` | 组织场（M2） | 否 |
+| `anatomize-tissue` | 组织场：压力 / 灌注 / 氧 / 热 / 损伤（M2） | 否 |
 | `anatomize-physio` | 0D 腔室生理（M4） | 否 |
 | `anatomize-cut` | 多边形裁剪与结构判定（M1） | 否 |
 | `anatomize-sim` | 世界编排、rapier2d 驱动 | 仅 rapier2d |
@@ -107,7 +125,7 @@ cargo run -p anatomize-tools --bin cut_demo    # M1：切割与结构求交
 |---|---|
 | ✅ M0 | workspace 骨架、rapier2d 直驱、11 部件 ragdoll、固定 tick |
 | ✅ M1 | 多边形裁剪 + 凸分解 + 切面折线（12 测试，含 10000 次 fuzz） |
-| M2 | 组织场：压力求解 + 灌注 + 创口通量 |
+| ✅ M2 | 组织场：压力求解 + 灌注 + 创口通量（15 测试，解析解误差 0.003%） |
 | M3 | 关节三级状态机 + 结构求交 |
 | M4 | 循环 / 呼吸 / 神经闭环 |
 | M5 | 温度 + 消化 + 疼痛 |
