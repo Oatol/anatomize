@@ -6,10 +6,12 @@
 //! 本 crate 依赖 rapier2d，但不依赖 Bevy —— 渲染是别人的事。
 
 pub mod fracture;
+pub mod rewind;
 pub mod save;
 pub mod sever;
 
 pub use fracture::{FractureConfig, SliceReport};
+pub use rewind::{Rewind, Snapshot};
 pub use save::{SAVE_VERSION, SaveFile};
 pub use sever::{SeverOutcome, apply_cut, build_tissue, layer_kind};
 
@@ -211,6 +213,8 @@ pub struct Sim {
     pub fracture: FractureConfig,
     /// 累计切了几刀。验收标准 8 的"连续断裂 100 次"按它计数。
     pub slices: u32,
+    /// 5 秒回溯的环形缓冲。
+    pub rewind: Rewind,
 }
 
 /// 姿态控制：往一组目标关节角上做 PD 拉。
@@ -380,6 +384,7 @@ impl Sim {
             posture: None,
             fracture: FractureConfig::default(),
             slices: 0,
+            rewind: Rewind::default_5s(),
         }
     }
 
@@ -431,6 +436,8 @@ impl Sim {
         self.update_joint_health();
         self.tick.advance();
         self.step_physio();
+        // 回溯快照：内部按 stride 跳，不是每帧都存
+        self.capture_rewind();
     }
 
     // -----------------------------------------------------------------------
@@ -602,7 +609,7 @@ impl Sim {
                 t.cfg.ambient_c = self.ambient_c;
                 t.cfg.metab_heat = self.tissue_metab_base * self.physio.bus.metab_scale;
                 t.cfg.blood_c = self.physio.bus.temp_core;
-                t.step(self.physio.bus.map, dt_of(TISSUE_HZ));
+                t.maybe_step(self.physio.bus.map, dt_of(TISSUE_HZ));
             }
             input.hemorrhage_ml_s = t.step.wound_flux;
             input.tissue_o2 = Some(t.step.mean_o2);

@@ -50,7 +50,10 @@ fn main() {
     // ---------------------------------------------------------------- 场景 A
     // 完整身体：只叠灌注热力图，看"活着"的样子
     let a = world();
-    let mut panel_a = Canvas::new(760, 700, 1.75, 0.0);
+    // 画布中心必须跟着身体走。身体挂在 (0, 40)，画布中心却在 (0, 0) 的话，
+    // 逐像素绘制的 `put` 会因为越界检查全部丢弃——图上是空的，而且**不会报错**。
+    let center = a.body_origin_world().unwrap_or(Vec2::new(0.0, 40.0)) + Vec2::new(0.0, 0.15);
+    let mut panel_a = Canvas::new_at(760, 700, 1.5, center);
     panel_a.clear(PANEL);
     paint_heatmap(&mut panel_a, &a, HeatChannel::Perfusion, 120);
     paint_pieces(&mut panel_a, &a, true);
@@ -82,7 +85,8 @@ fn main() {
         b.clamp_velocities();
         b.update_freeze();
     }
-    let mut panel_b = Canvas::new(820, 700, 1.85, 0.0);
+    let center_b = b.body_origin_world().unwrap_or(Vec2::new(0.0, 40.0)) + Vec2::new(0.0, 0.15);
+    let mut panel_b = Canvas::new_at(820, 700, 1.55, center_b);
     panel_b.clear(PANEL);
     paint_pieces(&mut panel_b, &b, true);
     cv.blit(&panel_b, 830, 150);
@@ -326,6 +330,26 @@ fn main() {
         println!("版面自检：{w}px / {}px  {s}", W - 80);
         assert!(w <= W as i32 - 80, "文案超出画布宽：{s}");
     }
+    // 覆盖率先行检查：面板里必须真的画了东西。
+    // 这条是补上来的——第一版 M6 图的两个身体面板是空的，因为画布中心
+    // 没跟着身体走，`put` 的越界检查把每个像素都丢了，而且静默成功。
+    for (name, c, w, h) in [
+        ("完整身体", &panel_a, 760, 700),
+        ("六刀之后", &panel_b, 820, 700),
+    ] {
+        let mut painted = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                if c.get(x, y) != PANEL {
+                    painted += 1;
+                }
+            }
+        }
+        let frac = painted as f32 / (w * h) as f32;
+        println!("  面板「{name}」非背景像素 {:.1}%", frac * 100.0);
+        assert!(frac > 0.05, "面板「{name}」几乎是空的（{:.1}%），画布中心错了", frac * 100.0);
+    }
+
     // 图像自检：headless 环境看不到图，只能扫像素。
     //
     // 断面在 2D 里就是**切口那条线**，宽度只有一两个像素（描边还是半透明的，

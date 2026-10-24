@@ -75,6 +75,21 @@ pub enum Key {
     HudPieces,
     HudWounds,
     HudFrozen,
+
+    // --- P0.5 回溯 / 扫描 ---
+    P05Title,
+    P05Subtitle,
+    P05FrameBefore,
+    P05FrameAfter,
+    P05FrameRewound,
+    P05PanelScan,
+    P05ScanAxisX,
+    P05ScanAxisY,
+    P05ScanLow,
+    P05ScanHigh,
+    P05Footer1,
+    P05Footer2,
+    P05Note,
 }
 
 /// 取一条文案。缺项时回退到中文（宁可显示中文，也不要显示 `Key::Foo`）。
@@ -155,6 +170,20 @@ fn zh(k: Key) -> &'static str {
         Key::HudPieces => "块数",
         Key::HudWounds => "创口通量",
         Key::HudFrozen => "已冻结",
+
+        Key::P05Title => "P0.5 · 回溯与参数扫描",
+        Key::P05Subtitle => "退回 5 秒只需要存「解不出来的东西」——压力场不算状态，它是解。",
+        Key::P05FrameBefore => "切之前",
+        Key::P05FrameAfter => "两刀之后 · 3 秒",
+        Key::P05FrameRewound => "回滚 3 秒",
+        Key::P05PanelScan => "参数扫描：交感张力上限 × 血容量",
+        Key::P05ScanAxisX => "血容量（mL）",
+        Key::P05ScanAxisY => "tone_max",
+        Key::P05ScanLow => "早",
+        Key::P05ScanHigh => "晚",
+        Key::P05Footer1 => "回溯只存「解不出来的东西」：切割痕迹、累积损伤、慢变量。压力场回滚后重解。",
+        Key::P05Footer2 => "扫描的价值不只是找参数，还有发现哪个参数其实是死的：baroreflex_gain 在重度失血里几乎不起作用。",
+        Key::P05Note => "格子里是失代偿时刻（秒）",
     }
 }
 
@@ -235,6 +264,26 @@ fn en(k: Key) -> Option<&'static str> {
         Key::HudPieces => "PIECES",
         Key::HudWounds => "WOUND FLUX",
         Key::HudFrozen => "FROZEN",
+
+        Key::P05Title => "P0.5 - REWIND AND PARAMETER SCAN",
+        Key::P05Subtitle => {
+            "REWINDING 5S ONLY NEEDS WHAT CANNOT BE RECOMPUTED - PRESSURE IS A SOLUTION, NOT A STATE."
+        }
+        Key::P05FrameBefore => "BEFORE",
+        Key::P05FrameAfter => "AFTER 2 CUTS - 3S",
+        Key::P05FrameRewound => "REWOUND 3S",
+        Key::P05PanelScan => "SCAN: TONE_MAX X BLOOD VOLUME",
+        Key::P05ScanAxisX => "BLOOD VOLUME (ML)",
+        Key::P05ScanAxisY => "TONE_MAX",
+        Key::P05ScanLow => "EARLY",
+        Key::P05ScanHigh => "LATE",
+        Key::P05Footer1 => {
+            "REWIND STORES ONLY WHAT CANNOT BE RECOMPUTED: CUT MARKS, ACCUMULATED DAMAGE, SLOW VARIABLES."
+        }
+        Key::P05Footer2 => {
+            "SCANNING ALSO TELLS YOU WHICH PARAMETER IS DEAD: BAROREFLEX_GAIN BARELY MATTERS IN SEVERE HEMORRHAGE."
+        }
+        Key::P05Note => "CELL = TIME TO DECOMPENSATION (S)",
     })
 }
 

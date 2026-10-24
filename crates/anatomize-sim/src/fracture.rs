@@ -54,6 +54,14 @@ pub struct FractureConfig {
     pub max_speed: f32,
     /// 一刀最多能切出几块。防止一条极长的刀线穿过整个身体时瞬间爆掉。
     pub max_pieces_per_cut: usize,
+    /// 切开瞬间两半沿刀面法线分开的速度（m/s）。
+    ///
+    /// 这不是物理仿真出来的，是**楔入力**：刀插进去把两半顶开。
+    /// 不给它的话，切完两半严丝合缝贴在一起，画面上"切开了"和"没切开"
+    /// 长得一模一样——实测像素差只有 0.25%。给 0.3 m/s 就够让缝隙可见，
+    /// 又不至于让碎片飞出去。**注意关节会把它们拉住**——切开大腿之后上下两半
+    /// 还各连着一个关节，所以它们只能错开，不能真的分开。想散架得等关节断。
+    pub separation_speed: f32,
 }
 
 impl Default for FractureConfig {
@@ -65,6 +73,7 @@ impl Default for FractureConfig {
             still_angvel: 0.25,
             max_speed: 60.0,
             max_pieces_per_cut: 4,
+            separation_speed: 1.2,
         }
     }
 }
@@ -267,6 +276,12 @@ impl Sim {
         );
 
         // --- 3. 建两块新刚体 ---
+        // 刀面的世界法线。两半沿它反向分开——楔入力，不是仿真出来的。
+        let wn = {
+            let n = local_line.normal();
+            let w = Rot2::from_angle(old_rot) * rv(n);
+            Vec2::new(w.x, w.y) * self.fracture.separation_speed
+        };
         let mut new_ids: Vec<PieceId> = Vec::with_capacity(2);
         for frag in &frags {
             // 世界位置 = 部件位姿 × 部件局部质心
@@ -274,7 +289,11 @@ impl Sim {
             let world = Rot2::from_angle(old_rot) * local_m + old_pos;
             // 速度按质心传递：v = v_cm + ω × r
             let r = world - old_pos;
-            let v = old_linvel + RVec2::new(-old_angvel * r.y, old_angvel * r.x);
+            let mut v = old_linvel + RVec2::new(-old_angvel * r.y, old_angvel * r.x);
+            // 沿刀面法线分开：质心在正侧的朝 +n 走，负侧的朝 -n 走
+            let side = local_line.signed_distance(frag.centroid);
+            let sign = if side >= 0.0 { 1.0 } else { -1.0 };
+            v += rv(wn * sign);
 
             let rb = RigidBodyBuilder::dynamic()
                 .translation(world)

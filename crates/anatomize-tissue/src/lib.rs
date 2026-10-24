@@ -151,6 +151,14 @@ pub struct TissueSim {
     solver: PressureSolver,
     thermal_scratch: Vec<f32>,
     pub step: TissueStep,
+    /// 每 N 个组织 tick 解一次场。 1 = 正常（20Hz）。
+    ///
+    /// 参数扫描时调大它，出血速率就变成每 N/20 秒更新一次。
+    /// 不能关掉——关掉的话“血压降 → 出血变慢”这条
+    /// 负反馈就没了，脱颌的扫描会得到一个线性下降的 MAP。
+    pub stride: u32,
+    /// 已经跳过多少个 tick。
+    skip: u32,
 }
 
 impl TissueSim {
@@ -162,6 +170,8 @@ impl TissueSim {
             solver: PressureSolver::new(n),
             thermal_scratch: vec![0.0; n],
             step: TissueStep::default(),
+            stride: 1,
+            skip: 0,
         };
         sim.field.update_conductance(&sim.cfg);
         sim
@@ -171,6 +181,24 @@ impl TissueSim {
     pub fn from_shapes(shapes: &[Shape], cfg: TissueConfig) -> Self {
         let f = rasterize(shapes, &cfg, 1.0);
         Self::new(f, cfg)
+    }
+
+    /// 按 `stride` 跳着解场。返回本次是否真的解了。
+    ///
+    /// 调度参数时用。组织场是单帧开销的大头，而出血速率
+    /// 变化的时间尺度是秒级的，1Hz 足够。
+    pub fn maybe_step(&mut self, map: f32, dt: f32) -> bool {
+        if self.stride <= 1 {
+            self.step(map, dt);
+            return true;
+        }
+        self.skip += 1;
+        if self.skip >= self.stride {
+            self.skip = 0;
+            self.step(map, dt * self.stride as f32);
+            return true;
+        }
+        false
     }
 
     /// 跑一个组织 tick。`map` 是当前平均动脉压（mmHg），`dt` 是秒。

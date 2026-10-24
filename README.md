@@ -4,7 +4,7 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：**M6 完成，P0 可玩** — 切开的身体真的会断成两截，断面看得见皮肤/脂肪/肌肉/骨四层；碎片 32 块预算、静止就冻结；生理状态能存能读，读回来轨迹不分叉。
+> 状态：**P0.5 完成** — 除了 P0 的全套，还多了两样：切错了能退回 5 秒（缓冲只占 11 MB），以及一个能扫参数空间的实验 CLI。
 
 ![M0 ragdoll](docs/m0-ragdoll.png)
 
@@ -37,6 +37,10 @@
 ![M6 section hud](docs/m6_section_hud.png)
 
 <sub>M6 输出。**左上**：完整身体的灌注热力图，黑的是骨芯和低灌注区。**右上**：六刀之后——腿、手臂、躯干、头都断了，碎片按解剖部件各自带色。**左下**：左大腿断面放大 14 倍，皮肤 4% / 脂肪 20% / 肌肉 49% / 骨 27%。**右下**：监护仪。整张图没有一张贴图，每一层都是逐像素从多边形算出来的。</sub>
+
+![P0.5 rewind and scan](docs/p05_rewind_scan.png)
+
+<sub>P0.5 输出。**上排**：切之前 → 两刀加断两条关节、跑 4 秒 → 回滚 4 秒。第 3 帧和切之前逐像素差 0.19%（压力场重解带来的亚像素抖动），第 2 帧差 14.2%。**下排左**：25 格参数扫描，交感张力上限 × 血容量 → 失代偿时刻，从 92 秒到 160 秒。**下排右**：回滚的关键数字——出血 39.09 → 0.00 mL/s，血容量 4844 → 5000，块数 13 → 11。</sub>
 
 ---
 
@@ -87,7 +91,32 @@ cargo run -p anatomize-tools --bin m3_demo       # M3：关节状态机 + 断供
 cargo run --release -p anatomize-tools --bin m4_demo   # M4：失血闭环（release 才快）
 cargo run --release -p anatomize-tools --bin m5_demo   # M5：冷、饿、疼
 cargo run --release -p anatomize-tools --bin m6_demo   # M6：断面、碎片、监护仪
+cargo run --release -p anatomize-tools --bin p05_demo  # P0.5：回溯 + 参数扫描
 ```
+
+## 批量实验
+
+调参是这个项目里最花时间的事——几乎每个数字都是标定出来的。所以有一个专门的 CLI：
+
+```bash
+# 扫一维
+cargo run --release -p anatomize-tools --bin scan -- \
+    --scenario bleed-femoral --param tone_max=0.3:1.0:0.175 --fast
+
+# 扫二维（笛卡尔积）
+cargo run --release -p anatomize-tools --bin scan -- \
+    --scenario bleed-femoral \
+    --param tone_max=0.5:1.0:0.25 --param blood_volume_ml=4000:5500:500 \
+    --out scan.csv
+```
+
+五个场景：`bleed-aorta` / `bleed-femoral` / `cold` / `feed` / `hammer`。
+`--fast` 把组织场降到 1Hz，快十倍（验验收标准时不要用）。
+
+它最大的用处不是"找最优参数"，而是**发现哪个参数其实是死的**：
+`baroreflex_gain` 从 0.4 扫到 2.0，失代偿时刻只动 0.8 秒——因为交感张力
+早就被 `clamp` 到 `tone_max` 了，增益只决定"多快饱和"。真正改变结局的是
+`tone_max` / `svr_gain` / `rvr_gain` / `blood_volume_ml`。
 
 `ragdoll` headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
 
@@ -206,7 +235,7 @@ ANATOMIZE_LANG=en cargo run --release -p anatomize-tools --bin m5_demo
 | `anatomize-physio` | 0D 腔室生理：循环 / 呼吸 / 神经 / 代谢 / 体温（M4/M5） | 否 |
 | `anatomize-cut` | 多边形裁剪、凸分解、切面 × 血管折线求交、断面分层（M1/M3/M6） | 否 |
 | `anatomize-sim` | 世界编排、rapier2d 驱动、关节健康 ↔ 约束桥接、断供耦合、L2↔L4 闭环、碎片与存档（M3–M6） | 仅 rapier2d |
-| `anatomize-tools` | headless 实验、帧渲染、断面着色、中文文字、中英文案表 | 否 |
+| `anatomize-tools` | headless 实验、帧渲染、断面着色、参数扫描、中文文字、中英文案表 | 否 |
 
 前五个 crate 的 `Cargo.toml` 里不允许出现 `bevy` / `wgpu` / `rapier`。
 
@@ -227,7 +256,8 @@ ANATOMIZE_LANG=en cargo run --release -p anatomize-tools --bin m5_demo
 | ✅ M3 | 关节三级状态机 + 结构求交（新增 14 测试：5 结构求交 + 4 断供 + 5 真实 rapier 世界的关节集成） |
 | ✅ M4 | 循环 / 呼吸 / 神经 / 代谢闭环 + 断端电导（新增 27 测试：4 多速率 + 18 生理单元 + 5 真闭环集成） |
 | ✅ M5 | 温度调节 + 消化 + 疼痛与姿态，中英文界面（新增 15 测试：3 语言 + 2 代谢 + 6 场景 + 4 渲染） |
-| ✅ M6 | 断面分层着色 + 碎片刚体化 + 冻结 + 监护仪 + 存档（新增 15 测试：6 断面 + 9 碎片/存档/性能；全 workspace 111 个） |
+| ✅ M6 | 断面分层着色 + 碎片刚体化 + 冻结 + 监护仪 + 存档（新增 15 测试：6 断面 + 9 碎片/存档/性能） |
+| ✅ P0.5 | 5 秒回溯 + 参数扫描 CLI（新增 5 测试；全 workspace 116 个） |
 
 顺序铁律：M2 必须在 M4 之前。没有通量，生理层就只能拍脑袋写常数。
 
