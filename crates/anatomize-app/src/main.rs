@@ -80,6 +80,7 @@ impl App {
         let shot_plan = shot::ShotPlan::from_args();
         let shot_mode = shot_plan.as_ref().is_some_and(|p| !p.menu);
         let shot_inspect = shot_plan.as_ref().is_some_and(|p| p.inspect);
+        let shot_heat = shot_plan.as_ref().is_some_and(|p| p.heat);
         let font = fonts::install(&cc.egui_ctx);
         let has_cjk = font.is_some();
         if font.is_none() {
@@ -114,7 +115,11 @@ impl App {
             paused: false,
             time_scale: 1.0,
             acc: 0.0,
-            heat: None,
+            heat: if shot_heat {
+                Some(HeatChannel::Perfusion)
+            } else {
+                None
+            },
             debug: false,
             toast: None,
             has_cjk,
@@ -218,14 +223,6 @@ impl App {
                     let now = self.sim.body.pieces[i].is_frozen();
                     let after = self.sim.set_frozen(id, !now);
                     self.say(if after { "冻结" } else { "解冻" });
-                }
-            }
-            Tool::Use => {
-                if let Some(i) = self.piece_at(drag.from) {
-                    match anatomize_sim::actions::use_item(&mut self.sim, PieceId(i as u32)) {
-                        Some(msg) => self.say(msg),
-                        None => self.say("这块没什么可用的"),
-                    }
                 }
             }
             Tool::Delete => {
@@ -474,12 +471,20 @@ impl App {
         n
     }
 
-    /// 清除碎片（不是道具、也不是身体部件）。
+    /// 清除碎片。
+    ///
+    /// 碎片 = **身体部件切出来的非主块**。之前的判断写成了
+    /// `part == NONE && item.is_none()`，那正好是"既不是道具也不是身体"的空集，
+    /// 所以点了没反应。
     pub fn clear_debris(&mut self) -> usize {
         let ids: Vec<PieceId> = (0..self.sim.body.pieces.len())
             .filter(|&i| {
                 let p = &self.sim.body.pieces[i];
-                !p.deleted && p.part == anatomize_core::PartId::NONE && p.item.is_none()
+                if p.deleted || p.part == anatomize_core::PartId::NONE {
+                    return false;
+                }
+                let id = PieceId(i as u32);
+                self.sim.body.primary[p.part.index()] != id
             })
             .map(|i| PieceId(i as u32))
             .collect();
@@ -702,6 +707,17 @@ impl eframe::App for App {
                     ui::Screen::InGame => self.screen = ui::Screen::MainMenu,
                     ui::Screen::WorldSelect => self.screen = ui::Screen::MainMenu,
                     ui::Screen::MainMenu => {}
+                }
+            }
+            // 手拖着某个物品时按 F 使用它——不用再单独一个"使用"工具
+            if in_game
+                && i.key_pressed(egui::Key::F)
+                && self.tool == Tool::Hand
+                && let Some(g) = self.drag.as_ref().and_then(|d| d.grabbed)
+            {
+                match anatomize_sim::actions::use_item(&mut self.sim, PieceId(g as u32)) {
+                    Some(msg) => self.toast = Some((msg, 2.5)),
+                    None => self.toast = Some(("这块没什么可用的".into(), 2.0)),
                 }
             }
             if i.key_pressed(egui::Key::Tab) && self.screen == ui::Screen::InGame {

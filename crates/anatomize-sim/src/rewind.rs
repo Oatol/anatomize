@@ -288,6 +288,7 @@ impl Sim {
                     still_s: 0.0,
                     frozen_pose: Some((ps.pos, ps.rot)),
                     item: ps.item,
+                    heat: None,
                     deleted: false,
                 });
                 continue;
@@ -333,6 +334,7 @@ impl Sim {
                 still_s: 0.0,
                 frozen_pose: None,
                 item: None,
+                heat: None,
                 deleted: false,
             });
         }

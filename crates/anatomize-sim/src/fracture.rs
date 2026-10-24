@@ -61,6 +61,9 @@ pub struct FractureConfig {
     /// 长得一模一样——实测像素差只有 0.25%。给 0.3 m/s 就够让缝隙可见，
     /// 又不至于让碎片飞出去。**注意关节会把它们拉住**——切开大腿之后上下两半
     /// 还各连着一个关节，所以它们只能错开，不能真的分开。想散架得等关节断。
+    ///
+    /// 1.2 m/s 试过：切下来的小角会像被弹了一下，和相邻碎片互相推、抖、乱飞。
+    /// 0.35 够让缝隙可见，又不会让求解器在初始重叠上炸开。
     pub separation_speed: f32,
 }
 
@@ -73,7 +76,7 @@ impl Default for FractureConfig {
             still_angvel: 0.25,
             max_speed: 60.0,
             max_pieces_per_cut: 4,
-            separation_speed: 1.2,
+            separation_speed: 0.35,
         }
     }
 }
@@ -234,6 +237,8 @@ impl Sim {
         if frags.len() != 2 {
             return false;
         }
+        // 切开的道具两半都还是那个物品
+        let piece_item = piece.item;
 
         // --- 1. 快照：旧刚体的位姿、速度，以及挂在它上面的关节 ---
         let old_handle = piece.body;
@@ -282,8 +287,34 @@ impl Sim {
             let w = Rot2::from_angle(old_rot) * rv(n);
             Vec2::new(w.x, w.y) * self.fracture.separation_speed
         };
+        // --- 3a. 先算两块的"组织快照"，再决定谁是主块 ---
+        //
+        // 主块留在场里，每帧现查（能看到梯度）；飞走的那块把平均值抄下来，
+        // 之后**热力图跟着它飞**。这就是用户要的"滤镜跟着肉走"。
+        let heat_offset = if part == PartId::NONE {
+            Vec2::ZERO
+        } else {
+            self.plan.parts[part.index()].offset
+        };
+        let heats: Vec<[f32; 4]> = match self.tissue.as_ref() {
+            Some(t) => frags
+                .iter()
+                .map(|f| {
+                    let poly: Vec<Vec2> =
+                        f.polygon.iter().map(|v| *v + heat_offset).collect();
+                    anatomize_tissue::mean_channels(&t.field, &poly)
+                })
+                .collect(),
+            None => vec![[0.0; 4]; frags.len()],
+        };
+        // 主块 = 含原部件质心的那块
+        let primary_idx = frags
+            .iter()
+            .position(|f| point_in_convex(&f.polygon, old_centroid))
+            .unwrap_or(0);
+
         let mut new_ids: Vec<PieceId> = Vec::with_capacity(2);
-        for frag in &frags {
+        for (fi, frag) in frags.iter().enumerate() {
             // 世界位置 = 部件位姿 × 部件局部质心
             let local_m = rv(frag.centroid * CM);
             let world = Rot2::from_angle(old_rot) * local_m + old_pos;
@@ -331,6 +362,12 @@ impl Sim {
                 p.polygon = frag.polygon.clone();
                 p.centroid = frag.centroid;
                 p.mass = frag.mass;
+                p.item = piece_item;
+                p.heat = if fi == primary_idx {
+                    None
+                } else {
+                    Some(heats[fi])
+                };
                 p.still_s = 0.0;
                 pid
             } else {
@@ -344,7 +381,13 @@ impl Sim {
                     mass: frag.mass,
                     still_s: 0.0,
                     frozen_pose: None,
-                    item: None,
+                    // 切开的道具两半都还是那个物品（换色、换名都对）
+                    item: piece_item,
+                    heat: if fi == primary_idx {
+                        None
+                    } else {
+                        Some(heats[fi])
+                    },
                     deleted: false,
                 });
                 id
@@ -352,19 +395,19 @@ impl Sim {
             new_ids.push(id);
         }
 
-        // --- 4. 代表块 = 含原部件质心的那一块 ---
+        // --- 4. 代表块 ---
         let primary = new_ids
-            .iter()
+            .get(primary_idx)
             .copied()
-            .find(|id| {
-                let p = &self.body.pieces[id.index()];
-                point_in_convex(&p.polygon, old_centroid)
-            })
             .unwrap_or(new_ids[0]);
-        self.body.primary[part.index()] = primary;
-        // 主块换了刚体，`PartInstance` 也要跟着换
-        self.body.parts[part.index()].body = self.body.pieces[primary.index()].body;
-        self.body.parts[part.index()].collider = self.body.pieces[primary.index()].collider;
+        // 道具没有 `PartId`（`part == NONE`），也就没有 primary / PartInstance
+        // 要更新——它们的"代表块"就是自己。
+        if part != PartId::NONE {
+            self.body.primary[part.index()] = primary;
+            // 主块换了刚体，`PartInstance` 也要跟着换
+            self.body.parts[part.index()].body = self.body.pieces[primary.index()].body;
+            self.body.parts[part.index()].collider = self.body.pieces[primary.index()].collider;
+        }
 
         // --- 4.5 飞走的那半在原位变成 Outside ---
         //
@@ -372,7 +415,13 @@ impl Sim {
         // 不抹掉的话，F1 热力图会在原位置继续画那块已经飞走的肉——
         // 看起来就是"贴了张图"，跟身体完全脱节。
         if let Some(t) = self.tissue.as_mut() {
-            let offset = self.plan.parts[part.index()].offset;
+            // 道具的 `part` 是 NONE，没有 `plan.parts` 条目。它们的多边形
+            // 本来就在"部件局部"（centroid = 0），所以 offset 当 0 用。
+            let offset = if part == PartId::NONE {
+                Vec2::ZERO
+            } else {
+                self.plan.parts[part.index()].offset
+            };
             let mut to_clear: Vec<Vec<Vec2>> = Vec::new();
             for &id in &new_ids {
                 if id == primary {
@@ -400,7 +449,7 @@ impl Sim {
 
         report
             .cut_parts
-            .push(self.plan.parts[part.index()].name.clone());
+            .push(self.piece_name(pid).to_string());
         true
     }
 

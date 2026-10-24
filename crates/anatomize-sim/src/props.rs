@@ -71,6 +71,7 @@ impl Sim {
             still_s: 0.0,
             frozen_pose: None,
             item: index,
+            heat: None,
             deleted: false,
         });
         id

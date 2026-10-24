@@ -234,3 +234,94 @@ fn firing_a_gun_cuts_what_it_hits() {
         "打中身体应该切出新块"
     );
 }
+
+/// 冻结之后姿态控制不能再碰那块（这是闪退的根因）。
+#[test]
+fn freezing_while_posture_is_on_does_not_crash() {
+    let mut sim = world();
+    sim.enable_posture();
+    for _ in 0..30 {
+        sim.step();
+    }
+    // 冻结一块连着关节的身体部件
+    let thigh = sim.plan.parts.iter().position(|p| p.name == "thigh_l").unwrap();
+    let id = sim.body.primary[thigh];
+    sim.set_frozen(id, true);
+    for _ in 0..60 {
+        sim.step(); // 姿态控制每帧都会遍历关节
+    }
+    println!("姿态控制开着时冻结左大腿，60 帧无 panic");
+}
+
+/// 切道具不能崩（道具没有 `plan.parts` 条目）。
+#[test]
+fn slicing_a_prop_does_not_crash() {
+    let mut sim = world();
+    let id = sim.spawn_item_by_id("plank", Vec2::new(0.0, 1.2)).unwrap();
+    for _ in 0..10 {
+        sim.step();
+    }
+    let (pos, _) = sim.piece_pose(id);
+    let seg = anatomize_cut::CutSegment {
+        a: pos - Vec2::new(0.0, 0.05),
+        b: pos + Vec2::new(0.0, 0.05),
+        width: 0.004,
+        speed: 3.0,
+    };
+    let r = sim.slice(&seg);
+    println!("切长板：新增 {} 块", r.new_pieces);
+    assert_eq!(r.new_pieces, 1);
+    // 两半都还是"长板"
+    for i in 0..sim.body.pieces.len() {
+        let pid = PieceId(i as u32);
+        if sim.body.pieces[i].deleted {
+            continue;
+        }
+        if sim.body.pieces[i].part == anatomize_core::PartId::NONE {
+            assert_eq!(sim.piece_name(pid), "长板", "切开的道具应该保留物品身份");
+        }
+    }
+    for _ in 0..30 {
+        sim.step();
+    }
+}
+
+/// 切下来的那块必须带上自己的组织快照——这样热力图才能跟着它飞。
+#[test]
+fn a_detached_piece_carries_its_own_heat() {
+    let mut sim = world();
+    let thigh = sim
+        .plan
+        .parts
+        .iter()
+        .position(|p| p.name == "thigh_l")
+        .unwrap();
+    let (pos, _) = sim.piece_pose(sim.body.primary[thigh]);
+    let cut = anatomize_cut::CutSegment {
+        a: pos - Vec2::new(0.06, 0.0),
+        b: pos + Vec2::new(0.06, 0.0),
+        width: 0.005,
+        speed: 2.0,
+    };
+    sim.slice(&cut);
+
+    let mut with_heat = 0;
+    let mut without_heat = 0;
+    for i in 0..sim.body.pieces.len() {
+        let p = &sim.body.pieces[i];
+        if p.deleted || p.part == anatomize_core::PartId::NONE {
+            continue;
+        }
+        if let Some(h) = p.heat {
+            with_heat += 1;
+            // 灌注必须是个正数——切下来的腿不是"零灌注"（那是断供才有的）
+            assert!(h[0] >= 0.0 && h[0].is_finite(), "heat 不合法：{h:?}");
+            assert!(h[2] > 30.0, "温度应该接近体温，实际 {}", h[2]);
+        } else {
+            without_heat += 1;
+        }
+    }
+    println!("带快照的块 {with_heat}，主块 {without_heat}");
+    assert!(with_heat >= 1, "切开之后应该有一块带着自己的组织快照");
+    assert!(without_heat >= 1, "主块应该还在场里现查");
+}

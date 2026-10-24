@@ -210,6 +210,13 @@ pub struct Piece {
     pub frozen_pose: Option<(Vec2, f32)>,
     /// 物品目录里的下标。`None` = 身体的一部分（走解剖分层渲染）。
     pub item: Option<u16>,
+    /// 这块自己的组织状态（灌注 / 氧 / 温度 / 损伤的平均值）。
+    ///
+    /// 场钉在身体坐标系里，块飞走之后就不能再查场了。所以切开的那一刻把
+    /// 平均值抄下来，之后**热力图跟着块走**——一块肉一层色，色跟着肉飞。
+    ///
+    /// `None` = 主块（它还在场里，每帧现查，能看到梯度）。
+    pub heat: Option<[f32; 4]>,
     /// 被删除工具移除。刚体已经没了，渲染也跳过。
     ///
     /// 不做 `Vec::remove` 是因为 `PieceId` 就是下标——删一个会让后面所有
@@ -455,6 +462,7 @@ impl Sim {
                 still_s: 0.0,
                 frozen_pose: None,
                 item: None,
+                heat: None,
                 deleted: false,
             })
             .collect();
@@ -646,18 +654,25 @@ impl Sim {
         let damp = p.damping * (0.4 + 0.6 * tone);
 
         for i in 0..self.body.joints.len() {
-            let (ha, hb) = (
-                self.body.pieces[self.body.joints[i].a.index()].body,
-                self.body.pieces[self.body.joints[i].b.index()].body,
-            );
+            let (a, b) = (self.body.joints[i].a, self.body.joints[i].b);
+            // 先把要用的量抄出来，避免 `&self.body` 和 `&mut self.physics` 打架
+            let (ba, bb, mass_a, mass_b, pain) = {
+                let pa = &self.body.pieces[a.index()];
+                let pb = &self.body.pieces[b.index()];
+                (pa.body, pb.body, pa.mass, pb.mass, self.body.joints[i].health.pain)
+            };
+            // 冻结 / 删除的块没有刚体，这条关节这一帧不发力
+            let (Some(rb_a), Some(rb_b)) =
+                (self.physics.bodies.get(ba), self.physics.bodies.get(bb))
+            else {
+                continue;
+            };
+            let (wa, wb) = (rb_a.angvel(), rb_b.angvel());
+
             // 疼的关节主动放弃发力：`pain = 1` 时只剩 15% 的力矩
-            let guard = 1.0 - 0.85 * self.body.joints[i].health.pain;
+            let guard = 1.0 - 0.85 * pain;
             let load = self.joint_load(i);
             let err = p.targets[i] - load.angle;
-            let (wa, wb) = (
-                self.physics.bodies[ha].angvel(),
-                self.physics.bodies[hb].angvel(),
-            );
             let dw = wb - wa;
             // 死区：误差和角速度都很小的时候不出力。
             //
@@ -666,12 +681,17 @@ impl Sim {
             if err.abs() < 0.010 && dw.abs() < 0.06 {
                 continue;
             }
-            let tau = (stiff * err - damp * dw) * guard;
+            // **按质量缩放**：刚度 26 对 9kg 的大腿合适，对 0.2kg 的碎片
+            // 就是 130 rad/s² —— 切下来的小角会被 PD 直接甩飞。
+            // 取两端质量的较小值，低于 4kg 开始等比衰减。
+            let m = mass_a.min(mass_b);
+            let scale = (m / 4.0).clamp(0.04, 1.0);
+            let tau = (stiff * err - damp * dw) * guard * scale;
             if !tau.is_finite() {
                 continue;
             }
-            self.physics.bodies[ha].add_torque(-tau, true);
-            self.physics.bodies[hb].add_torque(tau, true);
+            self.physics.bodies[ba].add_torque(-tau, true);
+            self.physics.bodies[bb].add_torque(tau, true);
         }
     }
 

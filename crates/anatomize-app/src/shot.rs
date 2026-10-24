@@ -30,6 +30,8 @@ pub struct ShotPlan {
     pub menu: bool,
     /// 打开检视窗口。
     pub inspect: bool,
+    /// 打开灌注热力图。
+    pub heat: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +79,7 @@ impl ShotPlan {
             action,
             menu: args.iter().any(|a| a == "--menu"),
             inspect: args.iter().any(|a| a == "--inspect"),
+            heat: args.iter().any(|a| a == "--heat"),
         })
     }
 }

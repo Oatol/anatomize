@@ -271,6 +271,41 @@ pub fn add_stump(f: &mut TissueField, point: Vec2, radius_cm: f32, total_c: f32)
     hits.len()
 }
 
+/// 一片区域里四个通道的平均值（灌注 / 氧 / 温度 / 损伤）。
+///
+/// 切下来的碎片飞走了，它就不能再查场了——场是身体坐标系的。所以切开的那
+/// 一刻把这块的平均值**抄下来**，之后碎片带着这份值走，热力图跟着碎片飞。
+///
+/// 这就是用户说的"滤镜/材质层"：一块肉一层色，色跟着肉走。
+pub fn mean_channels(f: &TissueField, poly: &[Vec2]) -> [f32; 4] {
+    let mut acc = [0.0f32; 4];
+    let mut n = 0usize;
+    for y in 0..f.h {
+        for x in 0..f.w {
+            let i = (y * f.w + x) as usize;
+            if f.kind[i] == TissueKind::Outside {
+                continue;
+            }
+            let p = Vec2::new(
+                f.origin.x + (x as f32 + 0.5) * f.texel_cm,
+                f.origin.y + (y as f32 + 0.5) * f.texel_cm,
+            );
+            if point_in_poly(poly, p) {
+                acc[0] += f.perfusion[i];
+                acc[1] += f.o2[i];
+                acc[2] += f.temp[i];
+                acc[3] += f.damage[i];
+                n += 1;
+            }
+        }
+    }
+    if n == 0 {
+        return [0.0; 4];
+    }
+    let k = n as f32;
+    [acc[0] / k, acc[1] / k, acc[2] / k, acc[3] / k]
+}
+
 /// 把一片区域从场里**抹掉**（变回 `Outside`）。
 ///
 /// # 为什么需要这个

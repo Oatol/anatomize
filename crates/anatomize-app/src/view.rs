@@ -52,6 +52,7 @@ impl View<'_> {
         self.paint_ground(painter, view);
         if let Some(ch) = self.heat {
             self.paint_heat(painter, view, ch);
+            self.paint_piece_heat(painter, view, ch);
         }
         self.paint_body(painter, view);
         if self.debug {
@@ -163,6 +164,40 @@ impl View<'_> {
                     Stroke::NONE,
                 ));
             }
+        }
+    }
+
+    /// 碎片的"滤镜层"：一块肉一层色，色跟着肉飞。
+    ///
+    /// 场钉在身体坐标系里，块飞走之后就不能再查场了。所以切开的那一刻把
+    /// 这块的平均值抄下来（`Piece::heat`），之后热力图跟着块走。
+    ///
+    /// 这就是用户要的效果：不是"在 ragdoll 后面贴一张图"，而是**每块自带一层**。
+    fn paint_piece_heat(&self, painter: &Painter, view: Rect, ch: HeatChannel) {
+        for i in 0..self.sim.body.pieces.len() {
+            let p = &self.sim.body.pieces[i];
+            if p.deleted {
+                continue;
+            }
+            let Some(h) = p.heat else {
+                continue;
+            };
+            let v = match ch {
+                HeatChannel::Perfusion => h[0],
+                HeatChannel::Oxygen => h[1],
+                HeatChannel::Temperature => h[2],
+                HeatChannel::Damage => h[3],
+            };
+            let poly = self.sim.piece_polygon(PieceId(i as u32));
+            if poly.len() < 3 {
+                continue;
+            }
+            let pts: Vec<Pos2> = poly.iter().map(|q| self.cam.to_screen(*q, view)).collect();
+            painter.add(Shape::convex_polygon(
+                pts,
+                c32a(ch.color(ch.normalize(v)), 150),
+                Stroke::NONE,
+            ));
         }
     }
 
