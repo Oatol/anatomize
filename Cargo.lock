@@ -19,7 +19,7 @@ name = "anatomize-body"
 version = "0.1.0"
 dependencies = [
  "anatomize-core",
- "ron",
+ "ron 0.12.2",
  "serde",
  "thiserror",
 ]
@@ -29,7 +29,7 @@ name = "anatomize-core"
 version = "0.1.0"
 dependencies = [
  "glam 0.34.1",
- "ron",
+ "ron 0.12.2",
  "serde",
  "thiserror",
 ]
@@ -47,7 +47,7 @@ name = "anatomize-physio"
 version = "0.1.0"
 dependencies = [
  "anatomize-core",
- "ron",
+ "ron 0.12.2",
  "serde",
 ]
 
@@ -61,6 +61,8 @@ dependencies = [
  "anatomize-physio",
  "anatomize-tissue",
  "rapier2d",
+ "ron 0.11.0",
+ "serde",
 ]
 
 [[package]]
@@ -68,7 +70,7 @@ name = "anatomize-tissue"
 version = "0.1.0"
 dependencies = [
  "anatomize-core",
- "ron",
+ "ron 0.12.2",
  "serde",
 ]
 
@@ -106,6 +108,12 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bitflags"
@@ -553,6 +561,19 @@ name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
+
+[[package]]
+name = "ron"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db09040cc89e461f1a265139777a2bde7f8d8c67c4936f700c63ce3e2904d468"
+dependencies = [
+ "base64",
+ "bitflags",
+ "serde",
+ "serde_derive",
+ "unicode-ident",
+]
 
 [[package]]
 name = "ron"

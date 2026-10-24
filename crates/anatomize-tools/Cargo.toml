@@ -39,3 +39,7 @@ path = "src/bin/m4_demo.rs"
 [[bin]]
 name = "m5_demo"
 path = "src/bin/m5_demo.rs"
+
+[[bin]]
+name = "m6_demo"
+path = "src/bin/m6_demo.rs"

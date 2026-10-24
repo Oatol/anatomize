@@ -68,8 +68,10 @@ pub use raster::{
     sever_supply_beyond,
 };
 
+use serde::{Deserialize, Serialize};
+
 /// 每个 texel 的组织类型。建体时烘焙一次，之后不变。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[repr(u8)]
 pub enum TissueKind {
     Outside = 0,

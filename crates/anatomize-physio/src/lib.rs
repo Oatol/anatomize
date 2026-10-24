@@ -37,6 +37,8 @@ pub mod respiration;
 pub use config::{ASSET_PHYSIO_CONFIG, PhysioConfig};
 pub use respiration::{arterial_o2_content, hill_saturation, tissue_o2_from_extraction};
 
+use serde::{Deserialize, Serialize};
+
 use anatomize_core::time::dt_of;
 use anatomize_core::{DT, METAB_HZ, NEURO_HZ, PHYSIO_HZ, RESP_HZ, Tick};
 
@@ -50,7 +52,7 @@ pub fn ramp(x: f32, lo: f32, hi: f32) -> f32 {
 }
 
 /// 意识当前被哪个环节卡住。HUD 直接显示这个，比显示四个数有用。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum LimitingFactor {
     #[default]
     Oxygen,
@@ -71,7 +73,7 @@ impl LimitingFactor {
 }
 
 /// 跨器官共享的状态。所有系统都只读写它。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct PhysioBus {
     // --- 容量与压力 ---
     /// 血容量，mL。

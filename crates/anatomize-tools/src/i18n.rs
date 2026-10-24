@@ -55,6 +55,26 @@ pub enum Key {
     SceneColdName,
     SceneFeedName,
     SceneHammerName,
+
+    // --- M6 断面 / HUD ---
+    M6Title,
+    M6Subtitle,
+    M6PanelIntact,
+    M6PanelCut,
+    M6PanelSection,
+    M6PanelBands,
+    M6PanelHud,
+    M6LayerSkin,
+    M6LayerFat,
+    M6LayerMuscle,
+    M6LayerBone,
+    M6BandWidth,
+    M6Footer1,
+    M6Footer2,
+    HudJoints,
+    HudPieces,
+    HudWounds,
+    HudFrozen,
 }
 
 /// 取一条文案。缺项时回退到中文（宁可显示中文，也不要显示 `Key::Foo`）。
@@ -116,6 +136,25 @@ fn zh(k: Key) -> &'static str {
         Key::SceneColdName => "5°C 裸露 10 分钟",
         Key::SceneFeedName => "喂 500 kcal，观察 2 小时",
         Key::SceneHammerName => "锤左膝 5 次",
+
+        Key::M6Title => "M6 · 断面、碎片与监护仪",
+        Key::M6Subtitle => "没有贴图。每一层都是现场从多边形算出来的——切开哪一面，就露出哪一面的结构。",
+        Key::M6PanelIntact => "完整身体 · 灌注热力图",
+        Key::M6PanelCut => "六刀之后 · 碎片飞散",
+        Key::M6PanelSection => "左大腿断面 · 放大 14 倍",
+        Key::M6PanelBands => "层带比例",
+        Key::M6PanelHud => "监护仪",
+        Key::M6LayerSkin => "皮肤",
+        Key::M6LayerFat => "脂肪",
+        Key::M6LayerMuscle => "肌肉",
+        Key::M6LayerBone => "骨",
+        Key::M6BandWidth => "剖面厚度",
+        Key::M6Footer1 => "断面着色与几何共用一份多边形：刀从哪进、多深、到没到骨，全部是算出来的。",
+        Key::M6Footer2 => "碎片 32 块预算，静止 10 秒冻结；100 刀无 NaN、无超速、无飞出。",
+        Key::HudJoints => "关节",
+        Key::HudPieces => "块数",
+        Key::HudWounds => "创口通量",
+        Key::HudFrozen => "已冻结",
     }
 }
 
@@ -171,6 +210,31 @@ fn en(k: Key) -> Option<&'static str> {
         Key::SceneColdName => "COLD 5C, 10 MIN",
         Key::SceneFeedName => "FEED 500 KCAL, 2 HOURS",
         Key::SceneHammerName => "HAMMER LEFT KNEE x5",
+
+        Key::M6Title => "M6 - SECTION, DEBRIS, MONITOR",
+        Key::M6Subtitle => {
+            "NO TEXTURES. EVERY LAYER IS COMPUTED FROM THE POLYGON. CUT ANYWHERE, SEE WHAT IS INSIDE."
+        }
+        Key::M6PanelIntact => "INTACT - PERFUSION MAP",
+        Key::M6PanelCut => "AFTER SIX CUTS - DEBRIS",
+        Key::M6PanelSection => "LEFT THIGH SECTION - 14X",
+        Key::M6PanelBands => "LAYER SHARES",
+        Key::M6PanelHud => "MONITOR",
+        Key::M6LayerSkin => "SKIN",
+        Key::M6LayerFat => "FAT",
+        Key::M6LayerMuscle => "MUSCLE",
+        Key::M6LayerBone => "BONE",
+        Key::M6BandWidth => "SECTION WIDTH",
+        Key::M6Footer1 => {
+            "SECTION SHADING AND GEOMETRY SHARE ONE POLYGON. WHERE THE BLADE ENTERS, HOW DEEP, WHETHER IT REACHES BONE - ALL COMPUTED."
+        }
+        Key::M6Footer2 => {
+            "32-PIECE BUDGET, FROZEN AFTER 10S IDLE. 100 CUTS: NO NAN, NO RUNAWAY SPEED, NOTHING ESCAPES."
+        }
+        Key::HudJoints => "JOINTS",
+        Key::HudPieces => "PIECES",
+        Key::HudWounds => "WOUND FLUX",
+        Key::HudFrozen => "FROZEN",
     })
 }
 

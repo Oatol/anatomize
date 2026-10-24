@@ -28,7 +28,7 @@
 //! **Dislocated 不是"没有约束"，而是"软约束"**——肢体还挂着，会甩、会拉、会痛，
 //! 但不会飞走。这是"手感真实"的来源，也是 v0.1 直接 `remove_joint` 最缺的中间态。
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// 损伤参数资产。`include_str!` 进二进制，和 `human_01.ron` 一样的做法。
 pub const ASSET_DAMAGE_CONFIG: &str = include_str!("../../../assets/config/damage.ron");
@@ -52,7 +52,7 @@ impl DamageConfig {
 }
 
 /// 关节状态。顺序有意义：`Ord` 越大越严重。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum JointState {
     Intact,
     Sprained,
@@ -84,7 +84,7 @@ impl JointState {
 }
 
 /// 关节健康四量 + 状态 + tether 余量。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct JointHealth {
     /// 0..1 结构完整（韧带 / 关节囊 / 骨端）。
     pub integrity: f32,

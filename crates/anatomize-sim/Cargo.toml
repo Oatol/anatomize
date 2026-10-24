@@ -12,3 +12,5 @@ anatomize-cut = { path = "../anatomize-cut" }
 anatomize-tissue = { path = "../anatomize-tissue" }
 anatomize-physio = { path = "../anatomize-physio" }
 rapier2d = "0.36.1"
+serde = { version = "1.0.229", features = ["derive"] }
+ron = "0.11.0"

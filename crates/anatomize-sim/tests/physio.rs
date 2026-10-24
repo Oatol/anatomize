@@ -111,7 +111,7 @@ fn aortic_transection_kills_within_a_minute() {
     let mut sim = world();
     settle(&mut sim, 2.0);
 
-    let out = sim.cut(&torso_cut()).expect("挂了组织场");
+    let out = sim.cut_body_local(&torso_cut()).expect("挂了组织场");
     println!("{}", out.report.summary(&sim.plan));
     let q0 = sim.hemorrhage_ml_s();
     println!(
@@ -146,7 +146,7 @@ fn compressing_the_wound_stops_the_bleeding_and_the_pressure() {
     let mut sim = world();
     settle(&mut sim, 2.0);
 
-    sim.cut(&torso_cut()).expect("挂了组织场");
+    sim.cut_body_local(&torso_cut()).expect("挂了组织场");
     let q0 = sim.hemorrhage_ml_s();
     println!("离断即刻出血 {q0:.2} mL/s");
 
@@ -186,7 +186,7 @@ fn femoral_bleed_is_slow_but_fatal() {
     let mut sim = world();
     settle(&mut sim, 2.0);
 
-    let out = sim.cut(&thigh_cut()).expect("挂了组织场");
+    let out = sim.cut_body_local(&thigh_cut()).expect("挂了组织场");
     println!("{}", out.report.summary(&sim.plan));
     let q0 = sim.hemorrhage_ml_s();
     println!(
@@ -221,7 +221,7 @@ fn the_wound_does_not_create_blood_from_nothing() {
     let mut sim = world();
     settle(&mut sim, 2.0);
 
-    sim.cut(&thigh_cut()).expect("挂了组织场");
+    sim.cut_body_local(&thigh_cut()).expect("挂了组织场");
     let t = sim.tissue.as_ref().unwrap();
     let s = t.step;
     println!(
@@ -250,7 +250,7 @@ fn a_cut_that_misses_every_vessel_does_not_bleed_much() {
         width: 0.4,
         speed: 1.0,
     };
-    let out = sim.cut(&cut).expect("挂了组织场");
+    let out = sim.cut_body_local(&cut).expect("挂了组织场");
     assert!(out.report.is_empty());
     let q = sim.hemorrhage_ml_s();
     println!("浅划出血 {q:.3} mL/s（{:.0} mL/min）", q * 60.0);

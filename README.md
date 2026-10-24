@@ -4,7 +4,7 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：**M5 完成** — 冷、饿、疼三条链都通了。5°C 裸露半小时，核心降到 35.7°C、寒战打满；喂 500 kcal，血糖半小时升 2.4 mmol/L、两小时回到基线；锤五下膝盖，从扭伤走到半脱位，疼痛 0.71，躯干歪了 19°。
+> 状态：**M6 完成，P0 可玩** — 切开的身体真的会断成两截，断面看得见皮肤/脂肪/肌肉/骨四层；碎片 32 块预算、静止就冻结；生理状态能存能读，读回来轨迹不分叉。
 
 ![M0 ragdoll](docs/m0-ragdoll.png)
 
@@ -33,6 +33,10 @@
 ![M5 cold food pain](docs/m5_cold_food_pain.png)
 
 <sub>M5 输出。三条不同的驱动链，三种时间尺度。**上排 · 冷**：环境 5°C，皮肤先掉（蓝），核心慢慢跟（红），到 35.7°C 时寒战打满、代谢率 ×1.35——但散热仍有 144 W 的缺口，所以他还在继续冷下去。**中排 · 饿**：500 kcal 进胃，两个腔室（胃→小肠）串出 15 分钟的滞后相，血糖 26 分钟见顶 +2.4，胰岛素跟着上来把它按回去。**下排 · 疼**：五下打在膝上，前两下就走到半脱位；灰线是健康时的目标角度，红线是实际角度——受伤之后那条腿再也拉不回目标，整个人歪了 19°。</sub>
+
+![M6 section hud](docs/m6_section_hud.png)
+
+<sub>M6 输出。**左上**：完整身体的灌注热力图，黑的是骨芯和低灌注区。**右上**：六刀之后——腿、手臂、躯干、头都断了，碎片按解剖部件各自带色。**左下**：左大腿断面放大 14 倍，皮肤 4% / 脂肪 20% / 肌肉 49% / 骨 27%。**右下**：监护仪。整张图没有一张贴图，每一层都是逐像素从多边形算出来的。</sub>
 
 ---
 
@@ -82,6 +86,7 @@ cargo run -p anatomize-tools --bin tissue_demo   # M2：组织场求解器
 cargo run -p anatomize-tools --bin m3_demo       # M3：关节状态机 + 断供
 cargo run --release -p anatomize-tools --bin m4_demo   # M4：失血闭环（release 才快）
 cargo run --release -p anatomize-tools --bin m5_demo   # M5：冷、饿、疼
+cargo run --release -p anatomize-tools --bin m6_demo   # M6：断面、碎片、监护仪
 ```
 
 `ragdoll` headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
@@ -199,9 +204,9 @@ ANATOMIZE_LANG=en cargo run --release -p anatomize-tools --bin m5_demo
 | `anatomize-body` | `BodyPlan` schema、编译、校验 | 否 |
 | `anatomize-tissue` | 组织场：压力 / 灌注 / 氧 / 热 / 损伤（M2） | 否 |
 | `anatomize-physio` | 0D 腔室生理：循环 / 呼吸 / 神经 / 代谢 / 体温（M4/M5） | 否 |
-| `anatomize-cut` | 多边形裁剪、凸分解、切面 × 血管折线求交（M1/M3） | 否 |
-| `anatomize-sim` | 世界编排、rapier2d 驱动、关节健康 ↔ 约束桥接、断供耦合、L2↔L4 闭环（M3/M4） | 仅 rapier2d |
-| `anatomize-tools` | headless 实验、帧渲染、中文文字、中英文案表 | 否 |
+| `anatomize-cut` | 多边形裁剪、凸分解、切面 × 血管折线求交、断面分层（M1/M3/M6） | 否 |
+| `anatomize-sim` | 世界编排、rapier2d 驱动、关节健康 ↔ 约束桥接、断供耦合、L2↔L4 闭环、碎片与存档（M3–M6） | 仅 rapier2d |
+| `anatomize-tools` | headless 实验、帧渲染、断面着色、中文文字、中英文案表 | 否 |
 
 前五个 crate 的 `Cargo.toml` 里不允许出现 `bevy` / `wgpu` / `rapier`。
 
@@ -221,8 +226,8 @@ ANATOMIZE_LANG=en cargo run --release -p anatomize-tools --bin m5_demo
 | ✅ M2 | 组织场：压力求解 + 灌注 + 创口通量（15 测试，解析解误差 0.003%） |
 | ✅ M3 | 关节三级状态机 + 结构求交（新增 14 测试：5 结构求交 + 4 断供 + 5 真实 rapier 世界的关节集成） |
 | ✅ M4 | 循环 / 呼吸 / 神经 / 代谢闭环 + 断端电导（新增 27 测试：4 多速率 + 18 生理单元 + 5 真闭环集成） |
-| ✅ M5 | 温度调节 + 消化 + 疼痛与姿态，中英文界面（新增 15 测试：3 语言 + 2 代谢 + 6 场景 + 4 渲染；全 workspace 96 个） |
-| M6 | 断面视觉 + HUD + 存档 → P0 可玩 |
+| ✅ M5 | 温度调节 + 消化 + 疼痛与姿态，中英文界面（新增 15 测试：3 语言 + 2 代谢 + 6 场景 + 4 渲染） |
+| ✅ M6 | 断面分层着色 + 碎片刚体化 + 冻结 + 监护仪 + 存档（新增 15 测试：6 断面 + 9 碎片/存档/性能；全 workspace 111 个） |
 
 顺序铁律：M2 必须在 M4 之前。没有通量，生理层就只能拍脑袋写常数。
 

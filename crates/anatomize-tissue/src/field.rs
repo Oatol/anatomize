@@ -7,11 +7,13 @@
 //! 场不跟着碎片走——碎片飞出去后，场里对应区域变成 `Outside`（组织已死）。
 //! 这条取舍见设计文档 5.6 与 ADR。
 
+use serde::{Deserialize, Serialize};
+
 use crate::TissueKind;
 use crate::config::TissueConfig;
 use anatomize_core::Vec2;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TissueField {
     /// texel 边长（cm）。
     pub texel_cm: f32,

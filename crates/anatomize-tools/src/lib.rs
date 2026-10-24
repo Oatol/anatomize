@@ -7,5 +7,6 @@
 //! - [`i18n`]：文案表，中英双语
 
 pub mod i18n;
+pub mod paint;
 pub mod render;
 pub mod text;

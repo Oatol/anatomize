@@ -78,7 +78,7 @@ fn run_scenario(mut sc: Scenario, seconds: f32) -> Scenario {
         sim.step(); // 落地站稳
     }
 
-    let out = sim.cut(&sc.cut).expect("挂了组织场");
+    let out = sim.cut_body_local(&sc.cut).expect("挂了组织场");
     let q0 = sim.hemorrhage_ml_s();
     println!(
         "\n[{:?}] 命中 {} 处，创口 {} texel，断供 {} texel，断端电导 {:.3}，即刻出血 {:.2} mL/s（{:.1} L/min）",

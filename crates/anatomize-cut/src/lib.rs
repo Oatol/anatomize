@@ -10,12 +10,16 @@
 pub mod decomp;
 pub mod intersect;
 pub mod line;
+pub mod section;
 pub mod split;
 pub mod structure;
 
 pub use decomp::{convex_decompose, convex_hull, signed_area, triangulate};
 pub use intersect::{Crossing, segment_polyline, segment_segment};
 pub use line::Line;
+pub use section::{
+    Band, SectionProfile, measure_bands, scan_layers, signed_depth,
+};
 pub use split::{Fragment, SplitOutcome, split_convex, split_part};
 pub use structure::{StructureReport, VesselDamage, VesselHit, cut_vessels};
 

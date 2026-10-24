@@ -11,17 +11,22 @@ pub struct Canvas {
     pub h: u32,
     px: Vec<u8>,
     scale: f32,
-    center_y: f32,
+    center: Vec2,
 }
 
 impl Canvas {
     pub fn new(w: u32, h: u32, world_width: f32, center_y: f32) -> Self {
+        Self::new_at(w, h, world_width, Vec2::new(0.0, center_y))
+    }
+
+    /// 任意世界中心。断面特写要把画布对准切口，不能假设中心在 x=0。
+    pub fn new_at(w: u32, h: u32, world_width: f32, center: Vec2) -> Self {
         Self {
             w,
             h,
             px: vec![0; (w * h * 4) as usize],
             scale: w as f32 / world_width,
-            center_y,
+            center,
         }
     }
 
@@ -33,15 +38,28 @@ impl Canvas {
             h,
             px: vec![0; (w * h * 4) as usize],
             scale: 1.0,
-            center_y: 0.0,
+            center: Vec2::ZERO,
         }
+    }
+
+    /// 世界米 → 像素。断面着色要自己走逐像素，所以这两个映射必须是公开的。
+    pub fn world_to_px(&self, p: Vec2) -> (f32, f32) {
+        self.to_px(p)
+    }
+
+    /// 像素 → 世界米。`to_px` 的逆。
+    pub fn px_to_world(&self, x: f32, y: f32) -> Vec2 {
+        Vec2::new(
+            self.center.x + (x - self.w as f32 * 0.5) / self.scale,
+            self.center.y + (self.h as f32 * 0.5 - y) / self.scale,
+        )
     }
 
     #[inline]
     fn to_px(&self, p: Vec2) -> (f32, f32) {
         (
-            self.w as f32 * 0.5 + p.x * self.scale,
-            self.h as f32 * 0.5 - (p.y - self.center_y) * self.scale,
+            self.w as f32 * 0.5 + (p.x - self.center.x) * self.scale,
+            self.h as f32 * 0.5 - (p.y - self.center.y) * self.scale,
         )
     }
 
@@ -60,6 +78,20 @@ impl Canvas {
         self.px[i..i + 4].copy_from_slice(&c);
     }
 
+    /// 读一个像素。headless 环境看不到图，靠它做程序化的图像自检。
+    pub fn get(&self, x: i32, y: i32) -> [u8; 4] {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 {
+            return [0, 0, 0, 0];
+        }
+        let i = ((y as u32 * self.w + x as u32) * 4) as usize;
+        [
+            self.px[i],
+            self.px[i + 1],
+            self.px[i + 2],
+            self.px[i + 3],
+        ]
+    }
+
     /// 按覆盖率 `a`（0..255）把 `c` 混到已有的像素上。字体光栅化用这个。
     #[inline]
     pub fn blend(&mut self, x: i32, y: i32, c: [u8; 4], a: u8) {
@@ -69,9 +101,9 @@ impl Canvas {
         let i = ((y as u32 * self.w + x as u32) * 4) as usize;
         let k = a as u32;
         let inv = 255 - k;
-        for ch in 0..4 {
+        for (ch, src) in c.iter().enumerate() {
             let dst = self.px[i + ch] as u32;
-            self.px[i + ch] = ((dst * inv + c[ch] as u32 * k) / 255) as u8;
+            self.px[i + ch] = ((dst * inv + *src as u32 * k) / 255) as u8;
         }
     }
 
