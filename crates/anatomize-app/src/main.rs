@@ -45,8 +45,13 @@ pub struct App {
     acc: f32,
     /// 热力图叠加。
     heat: Option<HeatChannel>,
-    /// 调试叠加：血管 + 关节。
+    /// 调试叠加：关节锚点（F1）。
     debug: bool,
+    /// 调试叠加：血管折线（F3）。
+    ///
+    /// 单独一个开关：躯干上那几条折线拼起来像个"大"字，和关节绑在一起时
+    /// 玩家会以为是某种奇怪的骨架。
+    pub vessels: bool,
     /// 上次操作的提示（HUD 底部显示几秒）。
     toast: Option<(String, f32)>,
     /// 有没有中文字形（没有的话提示用户装字体）。
@@ -121,6 +126,7 @@ impl App {
                 None
             },
             debug: false,
+            vessels: false,
             toast: None,
             has_cjk,
             shot: shot::ShotPlan::from_args(),
@@ -595,6 +601,7 @@ pub fn world_view(ui: &mut egui::Ui, app: &mut App) {
                 cam: &app.cam,
                 heat: app.heat,
                 debug: app.debug,
+                vessels: app.vessels,
             };
             v.paint(&painter, view_rect);
 
@@ -725,6 +732,9 @@ impl eframe::App for App {
             }
             if i.key_pressed(egui::Key::F1) {
                 self.debug = !self.debug;
+            }
+            if i.key_pressed(egui::Key::F3) {
+                self.vessels = !self.vessels;
             }
             if i.key_pressed(egui::Key::F2) {
                 self.heat = match self.heat {

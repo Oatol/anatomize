@@ -31,6 +31,48 @@ pub fn c32(c: [u8; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
 }
 
+/// 在 4×4 快照上做双线性采样。`u`/`v` 是 0..3 的连续坐标。
+fn bilinear(
+    grid: &anatomize_tissue::HeatGrid,
+    u: f32,
+    v: f32,
+    ch: HeatChannel,
+) -> f32 {
+    let u = u.clamp(0.0, 3.0);
+    let v = v.clamp(0.0, 3.0);
+    let x0 = (u.floor() as usize).min(2);
+    let y0 = (v.floor() as usize).min(2);
+    let fx = u - x0 as f32;
+    let fy = v - y0 as f32;
+    let pick = |gx: usize, gy: usize| {
+        let c = grid.cell(gx, gy);
+        match ch {
+            HeatChannel::Perfusion => c[0],
+            HeatChannel::Oxygen => c[1],
+            HeatChannel::Temperature => c[2],
+            HeatChannel::Damage => c[3],
+        }
+    };
+    let a = pick(x0, y0) * (1.0 - fx) + pick(x0 + 1, y0) * fx;
+    let b = pick(x0, y0 + 1) * (1.0 - fx) + pick(x0 + 1, y0 + 1) * fx;
+    a * (1.0 - fy) + b * fy
+}
+
+fn point_in_poly(poly: &[Vec2], p: Vec2) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        if (b - a).perp_dot(p - a) < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// 扇形三角化之后用 Mesh 提交。凸多边形用这个最稳。
 fn fill_mesh(painter: &Painter, pts: &[Pos2], color: Color32) {
     if pts.len() < 3 {
@@ -56,8 +98,11 @@ pub struct View<'a> {
     pub cam: &'a Camera,
     /// 热力图叠加（`None` = 只画断面）。
     pub heat: Option<HeatChannel>,
-    /// 调试：画血管折线和关节锚点。
+    /// 调试：画关节锚点。
     pub debug: bool,
+    /// 调试：画血管折线（单独开关——它是一张"大"字形的折线，很容易被
+    /// 误认成别的东西，不该跟关节绑在一起）。
+    pub vessels: bool,
 }
 
 impl View<'_> {
@@ -72,8 +117,10 @@ impl View<'_> {
             self.paint_heat(painter, view, ch);
         }
         if self.debug {
-            self.paint_vessels(painter, view);
             self.paint_joints(painter, view);
+        }
+        if self.vessels {
+            self.paint_vessels(painter, view);
         }
     }
 
@@ -159,38 +206,50 @@ impl View<'_> {
                     pos.y + m.x * sin + m.y * cos,
                 )
             };
-            let cw = (grid.hi.x - grid.lo.x) / 4.0;
-            let chh = (grid.hi.y - grid.lo.y) / 4.0;
-            for gy in 0..4 {
-                for gx in 0..4 {
-                    let x0 = grid.lo.x + gx as f32 * cw;
-                    let y0 = grid.lo.y + gy as f32 * chh;
-                    let quad = vec![
-                        to_world(Vec2::new(x0, y0)),
-                        to_world(Vec2::new(x0 + cw, y0)),
-                        to_world(Vec2::new(x0 + cw, y0 + chh)),
-                        to_world(Vec2::new(x0, y0 + chh)),
-                    ];
-                    // 格子是矩形，块不是——求交之后才是真正要涂的那一小片
-                    let clipped = anatomize_core::clip_convex(&quad, &poly);
-                    if clipped.len() < 3 {
-                        continue;
-                    }
-                    let cell = grid.cell(gx, gy);
-                    let v = match ch {
-                        HeatChannel::Perfusion => cell[0],
-                        HeatChannel::Oxygen => cell[1],
-                        HeatChannel::Temperature => cell[2],
-                        HeatChannel::Damage => cell[3],
-                    };
-                    let pts: Vec<Pos2> =
-                        clipped.iter().map(|q| self.cam.to_screen(*q, view)).collect();
-                    // 用 Mesh 而不是 `convex_polygon`：裁剪出来的多边形经常
-                    // 带共线点，egui 的凸性检查会**整块丢弃**，表现就是热力图
-                    // 只画出来一半。Mesh 自己扇形三角化，不挑。
-                    fill_mesh(painter, &pts, c32a(ch.color(ch.normalize(v)), 170));
+
+            // 渲染网格比快照网格密一档（8×8 格 / 9×9 顶点），顶点色按双线性
+            // 从 4×4 快照里取——这样格子之间是平滑渐变，不是硬边色块。
+            const N: usize = 8;
+            let cw = (grid.hi.x - grid.lo.x) / N as f32;
+            let chh = (grid.hi.y - grid.lo.y) / N as f32;
+
+            let mut mesh = egui::Mesh::default();
+            for gy in 0..=N {
+                for gx in 0..=N {
+                    let lc = Vec2::new(
+                        grid.lo.x + gx as f32 * cw,
+                        grid.lo.y + gy as f32 * chh,
+                    );
+                    let sp = self.cam.to_screen(to_world(lc), view);
+                    // 顶点在 4×4 网格里的连续坐标
+                    let u = gx as f32 / N as f32 * 3.0;
+                    let v = gy as f32 / N as f32 * 3.0;
+                    let val = bilinear(&grid, u, v, ch);
+                    mesh.colored_vertex(sp, c32a(ch.color(ch.normalize(val)), 170));
                 }
             }
+
+            for gy in 0..N {
+                for gx in 0..N {
+                    // 只提交中心落在块里的格子——边界会有一格以内的毛刺，
+                    // 但块本身有描边盖住，看不出来
+                    let lc = Vec2::new(
+                        grid.lo.x + (gx as f32 + 0.5) * cw,
+                        grid.lo.y + (gy as f32 + 0.5) * chh,
+                    );
+                    if !point_in_poly(&poly, to_world(lc)) {
+                        continue;
+                    }
+                    let stride = (N + 1) as u32;
+                    let i0 = gy as u32 * stride + gx as u32;
+                    let i1 = i0 + 1;
+                    let i2 = i0 + stride;
+                    let i3 = i2 + 1;
+                    mesh.add_triangle(i0, i1, i3);
+                    mesh.add_triangle(i0, i3, i2);
+                }
+            }
+            painter.add(Shape::mesh(mesh));
         }
     }
 
@@ -319,11 +378,11 @@ impl View<'_> {
                 let a = self.cam.to_screen(w[0], view);
                 let b = self.cam.to_screen(w[1], view);
                 let c = if v.arterial {
-                    [200, 70, 80, 190]
+                    [200, 70, 80, 120]
                 } else {
-                    [80, 110, 190, 190]
+                    [80, 110, 190, 120]
                 };
-                painter.line_segment([a, b], Stroke::new(1.5_f32, c32(c)));
+                painter.line_segment([a, b], Stroke::new(1.2_f32, c32(c)));
             }
         }
     }
