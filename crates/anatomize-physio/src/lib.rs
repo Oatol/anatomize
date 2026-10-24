@@ -116,8 +116,22 @@ pub struct PhysioBus {
     // --- 代谢与神经 ---
     /// 核心温度，°C。
     pub temp_core: f32,
+    /// 寒战强度 0..1。
+    pub shiver: f32,
+    /// 出汗强度 0..1。
+    pub sweat: f32,
+    /// 代谢率倍率。**会被写回组织场的 `metab_heat`**，体温闭环就靠这一个数。
+    pub metab_scale: f32,
+    /// 当前热平衡（W）。正 = 在升温，负 = 在失温。HUD 直接显示这个。
+    pub heat_balance_w: f32,
     /// 血糖，mmol/L。
     pub glucose: f32,
+    /// 胃里待排空的葡萄糖当量，mmol。
+    pub stomach_mmol: f32,
+    /// 小肠里待吸收的葡萄糖当量，mmol。
+    pub intestine_mmol: f32,
+    /// 胰岛素（相对单位，0 = 空腹）。
+    pub insulin: f32,
     /// 意识，0..1。
     pub consciousness: f32,
     /// 交感张力，0..1。
@@ -150,7 +164,14 @@ impl Default for PhysioBus {
             oxygen_debt: 0.0,
 
             temp_core: 37.0,
+            shiver: 0.0,
+            sweat: 0.0,
+            metab_scale: 1.0,
+            heat_balance_w: 0.0,
             glucose: 5.0,
+            stomach_mmol: 0.0,
+            intestine_mmol: 0.0,
+            insulin: 0.0,
             consciousness: 1.0,
             sympathetic_tone: 0.30,
             limiting_factor: LimitingFactor::Oxygen,
@@ -165,8 +186,10 @@ pub struct PhysioInput {
     pub hemorrhage_ml_s: f32,
     /// 组织平均氧分压（mmHg）。来自组织场，`None` 表示没有场。
     pub tissue_o2: Option<f32>,
-    /// 核心温度（°C）。来自组织场。
-    pub core_temp: Option<f32>,
+    /// 皮肤平均温度（°C）。体温调节的散热边界。
+    pub skin_temp: Option<f32>,
+    /// 环境温度（°C）。
+    pub ambient_c: f32,
 }
 
 impl PhysioInput {
@@ -214,6 +237,16 @@ impl Physio {
         Self::new(PhysioConfig::asset())
     }
 
+    /// 吃一顿。`kcal` 是这顿饭的热量，全部进胃里慢慢排空。
+    ///
+    /// 返回进胃的葡萄糖当量（mmol）。**不做咀嚼、不做吞咽**——食物在 P0 里
+    /// 就是一个"进入口腔的刚体"，`Sim` 判定它进了嘴之后调这里。
+    pub fn feed(&mut self, kcal: f32) -> f32 {
+        let mmol = (kcal.max(0.0) * self.cfg.kcal_to_mmol).max(0.0);
+        self.bus.stomach_mmol += mmol;
+        mmol
+    }
+
     /// 推进一个物理 tick。各子系统按自己的频率抽头。
     pub fn step(&mut self, input: PhysioInput, tick: Tick) {
         self.bus.hemorrhage_ml_s = input.hemorrhage_ml_s;
@@ -246,7 +279,11 @@ impl Physio {
 
         // 4. 代谢（1Hz）
         if tick.metab_due() {
-            metab::step(&mut self.bus, &self.cfg, dt_of(METAB_HZ), input.core_temp);
+            let thermal = metab::ThermalInput {
+                skin_temp: input.skin_temp,
+                ambient_c: input.ambient_c,
+            };
+            metab::step(&mut self.bus, &self.cfg, dt_of(METAB_HZ), thermal);
         }
 
         self.update_death();

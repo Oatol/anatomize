@@ -201,6 +201,19 @@ impl TissueField {
         if n == 0 { 0.0 } else { sum / n as f32 }
     }
 
+    /// 某个通道在**指定组织类型**上的均值。体温调节要的是皮肤温度。
+    pub fn kind_mean(&self, ch: &[f32], kind: TissueKind) -> f32 {
+        let mut sum = 0.0;
+        let mut n = 0usize;
+        for i in 0..self.len() {
+            if self.kind[i] == kind {
+                sum += ch[i];
+                n += 1;
+            }
+        }
+        if n == 0 { 0.0 } else { sum / n as f32 }
+    }
+
     /// 某个通道在**核心区**（离皮肤超过 `depth_cm`）的均值，用来当 `t_core`。
     pub fn core_mean(&self, ch: &[f32], depth_cm: f32) -> f32 {
         let r = (depth_cm / self.texel_cm).round() as i32;

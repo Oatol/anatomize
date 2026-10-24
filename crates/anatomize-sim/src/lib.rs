@@ -143,6 +143,43 @@ pub struct Sim {
     pub tissue: Option<TissueSim>,
     /// 0D 生理。
     pub physio: Physio,
+    /// 环境温度（°C）。写进组织场的边界条件，是"冷"这件事的唯一入口。
+    pub ambient_c: f32,
+    /// 组织场的**基准**代谢产热（K/s）。实际产热 = 这个值 × `physio.bus.metab_scale`。
+    tissue_metab_base: f32,
+    /// 姿态控制（M5）。`None` 表示这具身体是全软的 ragdoll。
+    pub posture: Option<Posture>,
+}
+
+/// 姿态控制：往一组目标关节角上做 PD 拉。
+///
+/// 为什么不用 rapier 的关节电机：0.36 的 motor API 只作用在单个 DOF 上，
+/// 而且要先切 `MotorModel`，跨版本不稳。直接给两个刚体施加一对反向力矩，
+/// 语义更清楚，也和设计文档 9.3 的 `apply_tone` 一一对应。
+///
+/// **肌张力 = 意识 × 交感张力**，再乘一个疼痛保护系数。所以一个人失血到昏迷时
+/// 会软下去、伤了的关节会护着——这两件事走的是同一个数。
+pub struct Posture {
+    /// 每个关节的目标角（弧度），按 `body.joints` 的顺序。
+    pub targets: Vec<f32>,
+    /// 刚度（N·m/rad）。
+    pub stiffness: f32,
+    /// 阻尼（N·m·s/rad）。
+    pub damping: f32,
+}
+
+impl Posture {
+    /// 用当前关节角当目标（"保持现状"）。
+    pub fn holding(sim: &Sim) -> Self {
+        let targets = (0..sim.body.joints.len())
+            .map(|i| sim.joint_load(i).angle)
+            .collect();
+        Self {
+            targets,
+            stiffness: 26.0,
+            damping: 3.2,
+        }
+    }
 }
 
 impl Sim {
@@ -250,6 +287,9 @@ impl Sim {
             injuries: Vec::new(),
             tissue: None,
             physio: Physio::asset(),
+            ambient_c: 22.0,
+            tissue_metab_base: 0.0,
+            posture: None,
         }
     }
 
@@ -295,6 +335,7 @@ impl Sim {
     }
 
     pub fn step(&mut self) {
+        self.apply_posture();
         self.physics.step();
         // 载荷必须在刚解完的这一步读，否则读到的是上一帧的约束冲量
         self.update_joint_health();
@@ -313,7 +354,104 @@ impl Sim {
     pub fn attach_tissue(&mut self, cfg: &TissueConfig) {
         let mut sim = build_tissue(&self.plan, cfg);
         sim.warmup(self.physio.bus.map);
+        self.tissue_metab_base = sim.cfg.metab_heat;
+        self.ambient_c = sim.cfg.ambient_c;
         self.tissue = Some(sim);
+    }
+
+    /// 改环境温度。这是"冷"的唯一入口——玩家靠近温箱、走进冷库，都调这里。
+    pub fn set_ambient(&mut self, c: f32) {
+        self.ambient_c = c;
+    }
+
+    /// 吃一顿（kcal）。食物在 P0 里没有咀嚼和吞咽，判定"进了嘴"之后直接调这里。
+    pub fn feed(&mut self, kcal: f32) -> f32 {
+        self.physio.feed(kcal)
+    }
+
+    /// 用冲量打某个部件。
+    ///
+    /// `impulse` 和 `at_cm` 都在**部件局部坐标系**里（厘米）——和 `BodyPlan` 的
+    /// 几何量同一套坐标。用局部坐标而不是世界坐标，是因为"打小腿中段"这件事
+    /// 不随身体姿态变化：身体躺下了，小腿中段还是小腿中段。
+    ///
+    /// 打击点**离关节越远**，杠杆越长，关节承受的角冲量越大——这就是"打小腿
+    /// 会伤膝盖"的物理来源，不需要额外规则。
+    pub fn strike_part(&mut self, part: &str, impulse: Vec2, at_cm: Vec2) -> bool {
+        let Some(p) = self.plan.parts.iter().position(|p| p.name == part) else {
+            return false;
+        };
+        let handle = self.body.parts[p].body;
+        let rb = &mut self.physics.bodies[handle];
+        // 局部 → 世界：偏移和冲量都要跟着刚体转
+        let at = rb
+            .position()
+            .transform_point(RVec2::new(at_cm.x * CM, at_cm.y * CM));
+        let rot = *rb.rotation();
+        let imp = rot * RVec2::new(impulse.x, impulse.y);
+        rb.apply_impulse_at_point(imp, at, true);
+        true
+    }
+
+    /// 打开姿态控制，目标取当前姿态（"保持住"）。
+    pub fn enable_posture(&mut self) {
+        self.posture = Some(Posture::holding(self));
+    }
+
+    /// 关掉姿态控制，回到全软 ragdoll。
+    pub fn disable_posture(&mut self) {
+        self.posture = None;
+    }
+
+    /// 设置某个关节的目标角（弧度）。名字不存在时返回 false。
+    pub fn set_pose_target(&mut self, joint: &str, angle: f32) -> bool {
+        let Some(i) = self.joint_index(joint) else {
+            return false;
+        };
+        if let Some(p) = self.posture.as_mut() {
+            p.targets[i] = angle;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 当前肌张力 0..1：意识 × 交感张力，再乘疼痛保护系数。
+    ///
+    /// 这是设计文档 9.3 里那条"只允许写三个东西"的第一条。昏迷 → 0，
+    /// 所以人会软下去；关节疼 → 该关节的保护系数掉下来，所以会护着。
+    pub fn muscle_tone(&self) -> f32 {
+        let b = &self.physio.bus;
+        b.consciousness * (0.3 + 0.7 * b.sympathetic_tone)
+    }
+
+    /// 把姿态控制变成力矩。**必须在 `physics.step()` 之前调**。
+    fn apply_posture(&mut self) {
+        let Some(p) = &self.posture else { return };
+        let tone = self.muscle_tone();
+        let stiff = p.stiffness * tone;
+        let damp = p.damping * (0.4 + 0.6 * tone);
+
+        for i in 0..self.body.joints.len() {
+            let (ha, hb) = (
+                self.body.parts[self.body.joints[i].a.index()].body,
+                self.body.parts[self.body.joints[i].b.index()].body,
+            );
+            // 疼的关节主动放弃发力：`pain = 1` 时只剩 15% 的力矩
+            let guard = 1.0 - 0.85 * self.body.joints[i].health.pain;
+            let load = self.joint_load(i);
+            let err = p.targets[i] - load.angle;
+            let (wa, wb) = (
+                self.physics.bodies[ha].angvel(),
+                self.physics.bodies[hb].angvel(),
+            );
+            let tau = (stiff * err - damp * (wb - wa)) * guard;
+            if !tau.is_finite() {
+                continue;
+            }
+            self.physics.bodies[ha].add_torque(-tau, true);
+            self.physics.bodies[hb].add_torque(tau, true);
+        }
     }
 
     /// 切一刀（身体局部厘米坐标），把后果写进组织场并立刻重解压力场。
@@ -358,11 +496,18 @@ impl Sim {
         let mut input = PhysioInput::none();
         if let Some(t) = self.tissue.as_mut() {
             if self.tick.tissue_due() {
+                // 三条 L4 → L2 的写回。**体温闭环全靠这三行**：
+                // 环境温度是边界，代谢产热是寒战的执行器，血温是深部温度的载体。
+                // 少写任何一条，"冷"就变成了一具不会回温也不会失温的模型。
+                t.cfg.ambient_c = self.ambient_c;
+                t.cfg.metab_heat = self.tissue_metab_base * self.physio.bus.metab_scale;
+                t.cfg.blood_c = self.physio.bus.temp_core;
                 t.step(self.physio.bus.map, dt_of(TISSUE_HZ));
             }
             input.hemorrhage_ml_s = t.step.wound_flux;
             input.tissue_o2 = Some(t.step.mean_o2);
-            input.core_temp = Some(t.step.core_temp);
+            input.skin_temp = Some(t.step.skin_temp);
+            input.ambient_c = self.ambient_c;
         }
         self.physio.step(input, self.tick);
     }
@@ -532,6 +677,21 @@ impl Sim {
                 Vec2::new(p.x, p.y)
             })
             .collect()
+    }
+
+    /// 部件在世界坐标下的朝向（弧度）。
+    pub fn part_angle(&self, part: &str) -> Option<f32> {
+        let p = self.plan.parts.iter().position(|p| p.name == part)?;
+        Some(self.physics.bodies[self.body.parts[p].body].rotation().angle())
+    }
+
+    /// 部件在世界坐标下的质心位置（米）。
+    pub fn part_center(&self, part: &str) -> Option<Vec2> {
+        let p = self.plan.parts.iter().position(|p| p.name == part)?;
+        let t = self.physics.bodies[self.body.parts[p].body]
+            .position()
+            .translation;
+        Some(Vec2::new(t.x, t.y))
     }
 
     /// 关节两端锚点的世界坐标（米）。装配正确时两者应该重合。

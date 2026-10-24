@@ -5,11 +5,13 @@
 
 pub mod ids;
 pub mod injury;
+pub mod lang;
 pub mod rng;
 pub mod time;
 
 pub use glam::Vec2;
 pub use ids::*;
 pub use injury::*;
+pub use lang::{ASSET_UI_CONFIG, Lang, UiConfig};
 pub use rng::Rng;
 pub use time::*;

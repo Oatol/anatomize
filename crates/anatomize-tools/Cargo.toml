@@ -11,7 +11,10 @@ anatomize-body = { path = "../anatomize-body" }
 anatomize-sim = { path = "../anatomize-sim" }
 anatomize-cut = { path = "../anatomize-cut" }
 anatomize-tissue = { path = "../anatomize-tissue" }
+anatomize-physio = { path = "../anatomize-physio" }
 png = "0.18.1"
+# 中文字形光栅化。只有 tools 用得到，核心 crate 依然零渲染依赖。
+fontdue = "0.9.5"
 
 [[bin]]
 name = "ragdoll"
@@ -32,3 +35,7 @@ path = "src/bin/m3_demo.rs"
 [[bin]]
 name = "m4_demo"
 path = "src/bin/m4_demo.rs"
+
+[[bin]]
+name = "m5_demo"
+path = "src/bin/m5_demo.rs"

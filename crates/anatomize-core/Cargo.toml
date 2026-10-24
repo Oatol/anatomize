@@ -8,4 +8,5 @@ description = "Anatomize 基础层：ID、时间、确定性随机、伤害事�
 [dependencies]
 glam = { version = "0.34.1", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
+ron = "0.12.2"
 thiserror = "2.0.21"

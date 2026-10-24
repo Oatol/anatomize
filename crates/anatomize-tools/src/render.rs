@@ -60,6 +60,21 @@ impl Canvas {
         self.px[i..i + 4].copy_from_slice(&c);
     }
 
+    /// 按覆盖率 `a`（0..255）把 `c` 混到已有的像素上。字体光栅化用这个。
+    #[inline]
+    pub fn blend(&mut self, x: i32, y: i32, c: [u8; 4], a: u8) {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.h as i32 || a == 0 {
+            return;
+        }
+        let i = ((y as u32 * self.w + x as u32) * 4) as usize;
+        let k = a as u32;
+        let inv = 255 - k;
+        for ch in 0..4 {
+            let dst = self.px[i + ch] as u32;
+            self.px[i + ch] = ((dst * inv + c[ch] as u32 * k) / 255) as u8;
+        }
+    }
+
     pub fn fill_poly(&mut self, poly: &[Vec2], c: [u8; 4]) {
         if poly.len() < 3 {
             return;

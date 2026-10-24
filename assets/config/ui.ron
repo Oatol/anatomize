@@ -1,0 +1,12 @@
+// 界面配置。改这里不用重编译。
+//
+// lang: zh | en
+//   zh  简体中文（默认）
+//   en  English
+//
+// 也可以临时覆盖：
+//   m4_demo --lang en
+//   ANATOMIZE_LANG=en m4_demo
+(
+    lang: Zh,
+)

@@ -4,7 +4,7 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：**M4 完成** — 出血、血压、意识三者已经闭成一个环。切断主动脉，43 秒后 MAP 跌破 45、50 秒后昏迷；按压创口，出血归零、血压停止下降。
+> 状态：**M5 完成** — 冷、饿、疼三条链都通了。5°C 裸露半小时，核心降到 35.7°C、寒战打满；喂 500 kcal，血糖半小时升 2.4 mmol/L、两小时回到基线；锤五下膝盖，从扭伤走到半脱位，疼痛 0.71，躯干歪了 19°。
 
 ![M0 ragdoll](docs/m0-ragdoll.png)
 
@@ -29,6 +29,10 @@
 ![M4 hemorrhage](docs/m4_hemorrhage.png)
 
 <sub>M4 输出。三条曲线，都是 `Sim::step()` 一步一步走出来的，没有一条是画上去的。**红**：横断主动脉（同时切到颈动脉和两条肱动脉），出血 3.8 L/min，MAP 在 43 秒跌破 45、心率 19 秒顶到 130、50 秒昏迷。**黄**：同样的刀，15 秒时按住创口——出血立刻归零、MAP 止跌并回升；60 秒松手，血又开始流，最终还是死。**蓝**：只断股动脉，1.3 L/min，127 秒才失代偿。看最下面那行**出血速率**：血压越低，创口流得越慢——创口自己就是自己的负反馈。</sub>
+
+![M5 cold food pain](docs/m5_cold_food_pain.png)
+
+<sub>M5 输出。三条不同的驱动链，三种时间尺度。**上排 · 冷**：环境 5°C，皮肤先掉（蓝），核心慢慢跟（红），到 35.7°C 时寒战打满、代谢率 ×1.35——但散热仍有 144 W 的缺口，所以他还在继续冷下去。**中排 · 饿**：500 kcal 进胃，两个腔室（胃→小肠）串出 15 分钟的滞后相，血糖 26 分钟见顶 +2.4，胰岛素跟着上来把它按回去。**下排 · 疼**：五下打在膝上，前两下就走到半脱位；灰线是健康时的目标角度，红线是实际角度——受伤之后那条腿再也拉不回目标，整个人歪了 19°。</sub>
 
 ---
 
@@ -77,6 +81,7 @@ cargo run -p anatomize-tools --bin cut_demo      # M1：切割与结构求交
 cargo run -p anatomize-tools --bin tissue_demo   # M2：组织场求解器
 cargo run -p anatomize-tools --bin m3_demo       # M3：关节状态机 + 断供
 cargo run --release -p anatomize-tools --bin m4_demo   # M4：失血闭环（release 才快）
+cargo run --release -p anatomize-tools --bin m5_demo   # M5：冷、饿、疼
 ```
 
 `ragdoll` headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
@@ -150,7 +155,41 @@ cargo run --release -p anatomize-tools --bin m4_demo   # M4：失血闭环（rel
 
 同一个伤，按不按创口，结局差 45 秒。这就是这个项目想要的东西。
 
+`m5_demo` 跑三个场景，输出上面那张六联图：
+
+```
+[冷] 5°C 30 分钟：核心 35.76°C，皮肤 32.93°C，寒战 1.00，代谢率 ×1.35，热平衡 -144 W
+[饿] 500 kcal → 438 mmol 葡萄糖当量，基线 4.82 mmol/L
+[饿] 峰值 7.24 @ 26 分钟，30 分钟 7.09，120 分钟 4.85
+[疼] 锤 5 次：Sprained/i=0.55/p=0.52 → Subluxed/i=0.20/p=0.86 → Subluxed/i=0.20/p=0.82
+     → Subluxed/i=0.19/p=0.80 → Subluxed/i=0.19/p=0.77
+[疼] 终态 Subluxed，integrity 0.19，疼痛 0.71，躯干倾角 18.9°
+```
+
+同一条大腿、同一个膝盖，疼与不疼的差别是 19° 的躯干倾角——不是一段动画，
+是"肌张力 × (1 − 0.85·疼痛)"这一个数把力矩压下去之后，物理自己算出来的。
+
 不需要窗口、不需要 GPU —— 这是核心与宿主解耦的直接好处。
+
+## 界面语言
+
+验收图上的字默认是中文。语言外置在 `assets/config/ui.ron`：
+
+```ron
+(lang: Zh,   // 或 En
+)
+```
+
+也可以临时覆盖，不用改文件：
+
+```bash
+cargo run --release -p anatomize-tools --bin m5_demo -- --lang en
+ANATOMIZE_LANG=en cargo run --release -p anatomize-tools --bin m5_demo
+```
+
+中文字形用系统字体渲染（Windows 的微软雅黑、macOS 的苹方、Linux 的 Noto CJK），
+**字体文件不进仓库**。找不到中文字体会自动退回英文并打印一行警告——
+画一堆方块比少一种语言更糟。要指定字体就设 `ANATOMIZE_FONT=/path/to/font.ttc`。
 
 ## 代码结构
 
@@ -159,10 +198,10 @@ cargo run --release -p anatomize-tools --bin m4_demo   # M4：失血闭环（rel
 | `anatomize-core` | ID、时间、确定性随机、伤害事件 | 否 |
 | `anatomize-body` | `BodyPlan` schema、编译、校验 | 否 |
 | `anatomize-tissue` | 组织场：压力 / 灌注 / 氧 / 热 / 损伤（M2） | 否 |
-| `anatomize-physio` | 0D 腔室生理：循环 / 呼吸 / 神经 / 代谢（M4） | 否 |
+| `anatomize-physio` | 0D 腔室生理：循环 / 呼吸 / 神经 / 代谢 / 体温（M4/M5） | 否 |
 | `anatomize-cut` | 多边形裁剪、凸分解、切面 × 血管折线求交（M1/M3） | 否 |
 | `anatomize-sim` | 世界编排、rapier2d 驱动、关节健康 ↔ 约束桥接、断供耦合、L2↔L4 闭环（M3/M4） | 仅 rapier2d |
-| `anatomize-tools` | headless 实验、帧渲染 | 否 |
+| `anatomize-tools` | headless 实验、帧渲染、中文文字、中英文案表 | 否 |
 
 前五个 crate 的 `Cargo.toml` 里不允许出现 `bevy` / `wgpu` / `rapier`。
 
@@ -181,8 +220,8 @@ cargo run --release -p anatomize-tools --bin m4_demo   # M4：失血闭环（rel
 | ✅ M1 | 多边形裁剪 + 凸分解 + 切面折线（12 测试，含 10000 次 fuzz） |
 | ✅ M2 | 组织场：压力求解 + 灌注 + 创口通量（15 测试，解析解误差 0.003%） |
 | ✅ M3 | 关节三级状态机 + 结构求交（新增 14 测试：5 结构求交 + 4 断供 + 5 真实 rapier 世界的关节集成） |
-| ✅ M4 | 循环 / 呼吸 / 神经 / 代谢闭环 + 断端电导（新增 27 测试：4 多速率 + 18 生理单元 + 5 真闭环集成；全 workspace 81 个） |
-| M5 | 温度 + 消化 + 疼痛 |
+| ✅ M4 | 循环 / 呼吸 / 神经 / 代谢闭环 + 断端电导（新增 27 测试：4 多速率 + 18 生理单元 + 5 真闭环集成） |
+| ✅ M5 | 温度调节 + 消化 + 疼痛与姿态，中英文界面（新增 15 测试：3 语言 + 2 代谢 + 6 场景 + 4 渲染；全 workspace 96 个） |
 | M6 | 断面视觉 + HUD + 存档 → P0 可玩 |
 
 顺序铁律：M2 必须在 M4 之前。没有通量，生理层就只能拍脑袋写常数。

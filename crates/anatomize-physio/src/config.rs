@@ -113,10 +113,55 @@ pub struct PhysioConfig {
     pub glucose_base: f32,
     /// 基础血糖消耗（mmol/(L·s)）。5 mmol/L 的 5L 循环池，约 2 小时用完。
     pub glucose_use: f32,
+    /// 血糖分布容积（L）。葡萄糖溶在全身细胞外液里，不是只溶在血浆里。
+    pub glucose_volume_l: f32,
     /// 体温设定点（°C）。
     pub temp_setpoint: f32,
     /// 核心温度跟随组织场的时间常数（s）。
     pub temp_tau: f32,
+
+    // --- 体温调节 ---
+    /// 基础代谢产热（W）。70kg 成人静息约 85~100 W。
+    pub bmr_watt: f32,
+    /// 整体散热系数（W/K）。`Q_loss = k·(T_skin − T_amb)`。
+    ///
+    /// 22°C 室温下皮肤约 32°C、散热约 100 W，所以 k ≈ 10。
+    /// 这个数同时决定了"多冷才算冷"：k 越大，同样的环境温度掉得越快。
+    pub heat_loss_w_per_k: f32,
+    /// 全身热容（kJ/K）。70kg × 3.5 kJ/(kg·K) = 245。
+    pub body_heat_capacity_kj_per_k: f32,
+    /// 开始寒战的深部温度（°C）。
+    pub shiver_onset: f32,
+    /// 每低 1°C 增加多少寒战强度。
+    pub shiver_gain: f32,
+    /// 寒战打满时代谢率的相对增幅。真实值可达 4~5 倍，这里取小值：
+    /// 大数值会让"冷"这个场景在几十秒内自愈，看不出失温。
+    pub shiver_boost: f32,
+    /// 开始出汗的深部温度（°C）。
+    pub sweat_onset: f32,
+    /// 每高 1°C 增加多少出汗强度。
+    pub sweat_gain: f32,
+    /// 出汗打满时代谢散热相对基准的增幅。
+    pub sweat_boost: f32,
+
+    // --- 消化 ---
+    /// 1 kcal 折算成多少 mmol 葡萄糖当量。
+    ///
+    /// 真实混合膳食约 60% 热量来自碳水，1 mmol 葡萄糖 = 0.686 kcal
+    /// → `0.6 / 0.686 ≈ 0.875`。脂肪和蛋白也会通过糖异生变成糖，所以不按纯碳水算。
+    pub kcal_to_mmol: f32,
+    /// 胃排空时间常数（s）。
+    pub gastric_tau: f32,
+    /// 小肠吸收时间常数（s）。两个腔室串联给出 15~20 分钟的滞后相。
+    pub intestine_tau: f32,
+    /// 胰岛素对血糖偏差的增益（1/(mmol/L)）。
+    pub insulin_gain: f32,
+    /// 胰岛素时间常数（s）。
+    pub insulin_tau: f32,
+    /// 胰岛素介导的葡萄糖摄取上限（mmol/s）。
+    pub insulin_uptake: f32,
+    /// 肝糖原输出增益（1/s）。
+    pub hepatic_gain: f32,
 
     // --- 死亡 ---
     /// 心输出量归零持续多久判定死亡（s）。
@@ -169,8 +214,27 @@ impl Default for PhysioConfig {
 
             glucose_base: 5.0,
             glucose_use: 0.004,
+            glucose_volume_l: 15.0,
             temp_setpoint: 37.0,
             temp_tau: 5.0,
+
+            bmr_watt: 100.0,
+            heat_loss_w_per_k: 10.0,
+            body_heat_capacity_kj_per_k: 245.0,
+            shiver_onset: 36.5,
+            shiver_gain: 3.0,
+            shiver_boost: 0.35,
+            sweat_onset: 37.2,
+            sweat_gain: 3.0,
+            sweat_boost: 0.6,
+
+            kcal_to_mmol: 0.875,
+            gastric_tau: 1500.0,
+            intestine_tau: 1200.0,
+            insulin_gain: 0.6,
+            insulin_tau: 600.0,
+            insulin_uptake: 0.075,
+            hepatic_gain: 0.02,
 
             arrest_death_s: 60.0,
         }

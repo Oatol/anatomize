@@ -132,6 +132,8 @@ pub struct TissueStep {
     pub mean_o2: f32,
     /// 核心温度（°C，离皮肤 >2cm 的区域）。
     pub core_temp: f32,
+    /// 皮肤平均温度（°C）。体温调节的**散热边界**由它决定，不是核心温度。
+    pub skin_temp: f32,
     /// 组织平均损伤（0..1）。
     pub mean_damage: f32,
     /// 动脉端总流入（mL/s）。
@@ -229,6 +231,7 @@ impl TissueSim {
             mean_perfusion: self.field.mean(&self.field.perfusion),
             mean_o2: self.field.mean(&self.field.o2),
             core_temp: self.field.core_mean(&self.field.temp, 2.0),
+            skin_temp: self.field.kind_mean(&self.field.temp, crate::TissueKind::Skin),
             mean_damage: self.field.mean(&self.field.damage),
             arterial_inflow: arterial_inflow(&self.field, map),
             venous_return: venous_return(&self.field, self.cfg.p_venous),
@@ -244,6 +247,11 @@ impl TissueSim {
         self.field.set_wound_clamped(on);
         self.warmup(map);
         self.step.wound_flux
+    }
+
+    /// 皮肤平均温度（°C）。L4 用它算散热，L2 用它算冻伤。
+    pub fn skin_temp(&self) -> f32 {
+        self.step.skin_temp
     }
 
     /// 当前开放的创口 texel 数。

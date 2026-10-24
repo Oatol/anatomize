@@ -54,11 +54,34 @@
     temp_flat: 30.0,
     temp_wake: 34.0,
 
+    // --- 体温调节（M5）---
+    // 热平衡：C·dT/dt = BMR·metab_scale − k·(T_skin − T_amb)
+    // 标定基准：皮肤 32 / 环境 22 → 散热 100 W = BMR → 核心稳在 37
+    bmr_watt: 100.0,
+    heat_loss_w_per_k: 10.0,
+    body_heat_capacity_kj_per_k: 245.0,   // 70kg × 3.5 kJ/(kg·K)
+    shiver_onset: 36.5,
+    shiver_gain: 3.0,
+    shiver_boost: 0.35,           // 寒战打满时代谢率 +35%
+    sweat_onset: 37.2,
+    sweat_gain: 3.0,
+    sweat_boost: 0.6,
+
     // --- 代谢 ---
     glucose_base: 5.0,
     glucose_use: 0.004,           // mmol/(L·s)，空腹稳态落在 4.82
+    glucose_volume_l: 15.0,       // 葡萄糖溶在细胞外液里，不是只溶在血浆里
     temp_setpoint: 37.0,
     temp_tau: 5.0,
+
+    // --- 消化（M5）---
+    kcal_to_mmol: 0.875,          // 混合膳食，约 60% 热量来自碳水
+    gastric_tau: 1500.0,          // 胃排空（25 分钟）
+    intestine_tau: 1200.0,        // 小肠吸收（20 分钟）→ 串出 15~20 分钟的滞后相
+    insulin_gain: 0.6,
+    insulin_tau: 600.0,
+    insulin_uptake: 0.075,        // mmol/s，标定到 500 kcal 峰值 +2.4
+    hepatic_gain: 0.02,
 
     // --- 死亡 ---
     arrest_death_s: 60.0,
