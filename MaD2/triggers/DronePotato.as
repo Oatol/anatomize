@@ -1,0 +1,103 @@
+package triggers
+{
+   import Box2D.Common.Math.b2Vec2;
+   import Box2D.Dynamics.b2Body;
+   import com.anegmetex.Soundmanager.sounds;
+   
+   public class DronePotato extends Drone
+   {
+      
+      private var burst:int = 0;
+      
+      public function DronePotato()
+      {
+         super();
+      }
+      
+      override protected function seek() : void
+      {
+         var _loc1_:b2Body = null;
+         var _loc2_:userData = null;
+         super.seek();
+         var _loc3_:int = 0;
+         while(_loc3_ < seekbodies.length)
+         {
+            _loc1_ = b2Body(seekbodies[_loc3_]);
+            if(userData(_loc1_.GetUserData()).name != "potato")
+            {
+               if(Math.random() > 0.8)
+               {
+                  followBody(_loc1_);
+                  break;
+               }
+            }
+            _loc3_++;
+         }
+      }
+      
+      override protected function follow() : void
+      {
+         var _loc1_:b2Vec2 = null;
+         var _loc2_:b2Vec2 = null;
+         var _loc3_:Number = NaN;
+         var _loc4_:Number = NaN;
+         var _loc5_:Vector.<Array> = null;
+         var _loc6_:uint = 0;
+         super.follow();
+         if(targetBody)
+         {
+            _loc1_ = bodyCenter;
+            _loc2_ = targetBody.GetWorldCenter().Copy();
+            _loc3_ = _loc1_.x - _loc2_.x;
+            _loc4_ = _loc1_.y - _loc2_.y;
+            if(_loc3_ * _loc3_ + _loc4_ * _loc4_ < triggerRadius * 0.5 * ud.size)
+            {
+               fly(_loc3_ * 10,_loc4_ * 10);
+            }
+            else
+            {
+               fly(-_loc3_ * 20,-_loc4_ * 20);
+            }
+            _loc5_ = ud.skin;
+            _loc6_ = 12921900;
+            body.SetXForm(_loc1_,Math.atan2(_loc2_.y - _loc1_.y,_loc2_.x - _loc1_.x) + Math.PI * 0.5);
+         }
+      }
+      
+      override protected function destroy() : Boolean
+      {
+         if(!super.destroy())
+         {
+            return false;
+         }
+         var _loc1_:b2Vec2 = targetBody.GetPosition();
+         var _loc2_:Number = Math.atan2(_loc1_.y - bodyCenter.y,_loc1_.x - bodyCenter.x);
+         var _loc3_:b2Vec2 = GeneralUtils.pointOnCircle(bodyCenter.x,bodyCenter.y,40 * ud.size / Physics.scale,Vars.toDegrees * _loc2_);
+         GameState.objects.addbullet("pot2",_loc3_.x,_loc3_.y,_loc2_,1,1,new b2Vec2(10 * (_loc1_.x - _loc3_.x),10 * (_loc1_.y - _loc3_.y)),10,body);
+         sounds.play("thumper_shoot",body,pixelCenter,0.5);
+         ++this.burst;
+         if(Math.random() > 0.8)
+         {
+            targetBody = null;
+            state = "seek";
+         }
+         else
+         {
+            state = "follow";
+         }
+         if(this.burst >= 3)
+         {
+            this.burst = 0;
+            ud.triggerDuration = 60;
+            targetBody = null;
+            state = "seek";
+         }
+         else
+         {
+            ud.triggerDuration = 4;
+         }
+         return true;
+      }
+   }
+}
+

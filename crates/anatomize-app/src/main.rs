@@ -18,6 +18,7 @@
 mod camera;
 mod fonts;
 mod icons;
+mod particles;
 mod shot;
 mod tools;
 mod ui;
@@ -68,6 +69,8 @@ pub struct App {
     pub fps: f32,
     /// 当前选中的物品分类下标。
     pub item_category: usize,
+    /// 粒子（切割喷血、爆炸碎片）。
+    pub particles: particles::Particles,
     /// 现在在哪个界面。
     pub screen: ui::Screen,
     /// 检视窗口开着没有。
@@ -135,6 +138,7 @@ impl App {
             load_menu: None,
             fps: 60.0,
             item_category: 0,
+            particles: particles::Particles::default(),
             screen: if shot_mode { ui::Screen::InGame } else { ui::Screen::MainMenu },
             inspect: shot_inspect,
             settings_open: false,
@@ -184,6 +188,15 @@ impl App {
                 };
                 let report = self.sim.slice(&seg);
                 let out = self.sim.cut(&seg);
+
+                // 参考 MaD2：每一刀都在切口喷东西。没有粒子的话，
+                // 切开一个人是静悄悄的——数值在流血，画面上什么都没发生。
+                let dir = (seg.b - seg.a).normalize_or_zero();
+                let normal = Vec2::new(-dir.y, dir.x);
+                let bleed = self.sim.hemorrhage_ml_s();
+                if report.new_pieces > 0 || bleed > 0.5 {
+                    self.particles.cut(seg.a, seg.b, normal, bleed.max(2.0));
+                }
                 let mut msg = String::new();
                 if report.new_pieces > 0 {
                     msg.push_str(&format!("切开 {} 块", report.new_pieces));
@@ -399,6 +412,7 @@ impl App {
         sim.enable_posture();
         self.sim = sim;
         self.selected = None;
+        self.particles.clear();
         self.cam = Camera {
             center: Vec2::new(0.0, world.height * 0.45),
             zoom: (720.0 / world.height).clamp(120.0, 600.0),
@@ -604,6 +618,7 @@ pub fn world_view(ui: &mut egui::Ui, app: &mut App) {
                 vessels: app.vessels,
             };
             v.paint(&painter, view_rect);
+            app.particles.draw(&painter, &app.cam, view_rect);
 
             // 刀线预览
             if app.tool == Tool::Knife
@@ -687,6 +702,9 @@ impl eframe::App for App {
             self.fps += (1.0 / dt - self.fps) * 0.1;
         }
         self.advance(dt);
+        if self.screen == ui::Screen::InGame {
+            self.particles.update(dt, self.sim.ground_y());
+        }
 
         if let Some((_, t)) = &mut self.toast {
             *t -= dt;
@@ -722,9 +740,18 @@ impl eframe::App for App {
                 && self.tool == Tool::Hand
                 && let Some(g) = self.drag.as_ref().and_then(|d| d.grabbed)
             {
+                // 爆炸要在删掉之前记位置——不然炸完就找不到了
+                let at = self.sim.piece_pose(PieceId(g as u32)).0;
+                let explosive = self
+                    .sim
+                    .item_of(PieceId(g as u32))
+                    .is_some_and(|d| d.tag == "explosive");
                 match anatomize_sim::actions::use_item(&mut self.sim, PieceId(g as u32)) {
                     Some(msg) => self.toast = Some((msg, 2.5)),
                     None => self.toast = Some(("这块没什么可用的".into(), 2.0)),
+                }
+                if explosive {
+                    self.particles.burst(at, 40.0);
                 }
             }
             if i.key_pressed(egui::Key::Tab) && self.screen == ui::Screen::InGame {
