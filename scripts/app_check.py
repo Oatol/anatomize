@@ -127,12 +127,11 @@ def main() -> None:
                     n += 1
         return n / max(1, len(range(y0, y1, 3)) * len(range(x0, x1, 3)))
 
-    # 物品在左（268px），工具在右（60px），时间条在底（46px）
-    left = painted(0, 0, 268, h - 46)
-    right = painted(w - 60, 0, w, h - 46)
-    bottom = painted(0, h - 44, w, h)
-    print(f"  物品栏 {left * 100:.1f}% · 工具栏 {right * 100:.1f}% · 时间条 {bottom * 100:.1f}%")
-    for name, v in [("物品栏", left), ("工具栏", right), ("时间条", bottom)]:
+    # 物品在左（300px），工具在右（62px）
+    left = painted(0, 0, 300, h)
+    right = painted(w - 62, 0, w, h)
+    print(f"  物品栏 {left * 100:.1f}% · 工具栏 {right * 100:.1f}%")
+    for name, v in [("物品栏", left), ("工具栏", right)]:
         if v < 0.3:
             sys.exit(f"{name}几乎是空的（{v * 100:.1f}%），UI 没画出来")
 

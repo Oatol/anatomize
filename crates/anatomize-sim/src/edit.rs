@@ -96,7 +96,18 @@ impl Sim {
         }
         p.deleted = true;
         let body = p.body;
-        if !p.is_frozen() {
+        let frozen = p.is_frozen();
+        // 删掉的块要从场里抹掉，不然 F1 热力图还在原位画它
+        let (part, poly): (anatomize_core::PartId, Vec<Vec2>) = {
+            let p = &self.body.pieces[id.index()];
+            (p.part, p.polygon.clone())
+        };
+        if let (Some(t), true) = (self.tissue.as_mut(), part != anatomize_core::PartId::NONE) {
+            let offset = self.plan.parts[part.index()].offset;
+            let body_poly: Vec<Vec2> = poly.iter().map(|v| *v + offset).collect();
+            anatomize_tissue::clear_region(&mut t.field, &[body_poly]);
+        }
+        if !frozen {
             self.physics.bodies.remove(
                 body,
                 &mut self.physics.islands,

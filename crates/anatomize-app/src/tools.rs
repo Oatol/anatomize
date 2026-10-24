@@ -25,14 +25,17 @@ pub enum Tool {
     Freeze,
     /// 删除：点一下把那块移除。
     Delete,
+    /// 使用：点一下触发物品的行为（爆炸 / 开火 / 吃）。
+    Use,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 6] = [
+    pub const ALL: [Tool; 7] = [
         Tool::Select,
         Tool::Hand,
         Tool::Knife,
         Tool::Hammer,
+        Tool::Use,
         Tool::Freeze,
         Tool::Delete,
     ];
@@ -46,6 +49,7 @@ impl Tool {
             Tool::Hammer => "锤",
             Tool::Freeze => "冻结",
             Tool::Delete => "删除",
+            Tool::Use => "使用",
         }
     }
 
@@ -57,6 +61,7 @@ impl Tool {
             Tool::Hammer => "点一下打一下",
             Tool::Freeze => "点一下冻结 / 解冻",
             Tool::Delete => "点一下删除",
+            Tool::Use => "点一下使用（爆炸 / 开火 / 吃）",
         }
     }
 
@@ -68,6 +73,7 @@ impl Tool {
             Tool::Hammer => egui::Key::Num3,
             Tool::Freeze => egui::Key::Num4,
             Tool::Delete => egui::Key::Num5,
+            Tool::Use => egui::Key::E,
         }
     }
 }

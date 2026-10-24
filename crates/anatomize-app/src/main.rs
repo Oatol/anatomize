@@ -63,10 +63,23 @@ pub struct App {
     pub fps: f32,
     /// 当前选中的物品分类下标。
     pub item_category: usize,
+    /// 现在在哪个界面。
+    pub screen: ui::Screen,
+    /// 检视窗口开着没有。
+    pub inspect: bool,
+    /// 设置窗口。
+    pub settings_open: bool,
+    /// 物品搜索框。
+    pub search: String,
+    /// 存档列表（选世界界面用）。
+    pub world_list: Vec<String>,
 }
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let shot_plan = shot::ShotPlan::from_args();
+        let shot_mode = shot_plan.as_ref().is_some_and(|p| !p.menu);
+        let shot_inspect = shot_plan.as_ref().is_some_and(|p| p.inspect);
         let font = fonts::install(&cc.egui_ctx);
         let has_cjk = font.is_some();
         if font.is_none() {
@@ -111,6 +124,11 @@ impl App {
             load_menu: None,
             fps: 60.0,
             item_category: 0,
+            screen: if shot_mode { ui::Screen::InGame } else { ui::Screen::MainMenu },
+            inspect: shot_inspect,
+            settings_open: false,
+            search: String::new(),
+            world_list: Vec::new(),
         }
     }
 
@@ -200,6 +218,14 @@ impl App {
                     let now = self.sim.body.pieces[i].is_frozen();
                     let after = self.sim.set_frozen(id, !now);
                     self.say(if after { "冻结" } else { "解冻" });
+                }
+            }
+            Tool::Use => {
+                if let Some(i) = self.piece_at(drag.from) {
+                    match anatomize_sim::actions::use_item(&mut self.sim, PieceId(i as u32)) {
+                        Some(msg) => self.say(msg),
+                        None => self.say("这块没什么可用的"),
+                    }
                 }
             }
             Tool::Delete => {
@@ -314,6 +340,20 @@ impl App {
                 self.sim.sever_joint("knee_l");
                 self.sim.sever_joint("hip_r");
             }
+            shot::Action::Boom => {
+                let c = self.cam.center;
+                // 先摆几个箱子，炸了才看得出冲击波
+                for off in [
+                    Vec2::new(-0.5, -0.3),
+                    Vec2::new(0.6, -0.3),
+                    Vec2::new(0.1, 0.2),
+                ] {
+                    self.sim.spawn_item_by_id("crate", c + off);
+                }
+                if let Some(g) = self.sim.spawn_item_by_id("grenade", c + Vec2::new(0.0, -0.1)) {
+                    self.sim.detonate(g, 1.8, 160.0);
+                }
+            }
             shot::Action::Props => {
                 let c = self.cam.center;
                 for (id, off) in [
@@ -402,6 +442,60 @@ impl App {
         }
     }
 
+    /// 刷新存档列表。
+    pub fn refresh_world_list(&mut self) {
+        let dir = Self::save_dir();
+        let mut list: Vec<String> = std::fs::read_dir(&dir)
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().is_some_and(|x| x == "ron"))
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        list.sort();
+        self.world_list = list;
+    }
+
+    /// 清除所有身体部件（保留道具）。
+    pub fn clear_creatures(&mut self) -> usize {
+        let ids: Vec<PieceId> = (0..self.sim.body.pieces.len())
+            .filter(|&i| {
+                let p = &self.sim.body.pieces[i];
+                !p.deleted && p.part != anatomize_core::PartId::NONE
+            })
+            .map(|i| PieceId(i as u32))
+            .collect();
+        let n = ids.len();
+        for id in ids {
+            self.sim.delete_piece(id);
+        }
+        self.selected = None;
+        n
+    }
+
+    /// 清除碎片（不是道具、也不是身体部件）。
+    pub fn clear_debris(&mut self) -> usize {
+        let ids: Vec<PieceId> = (0..self.sim.body.pieces.len())
+            .filter(|&i| {
+                let p = &self.sim.body.pieces[i];
+                !p.deleted && p.part == anatomize_core::PartId::NONE && p.item.is_none()
+            })
+            .map(|i| PieceId(i as u32))
+            .collect();
+        let n = ids.len();
+        for id in ids {
+            self.sim.delete_piece(id);
+        }
+        self.selected = None;
+        n
+    }
+
+    /// 开 / 关检视窗口。
+    pub fn toggle_inspect(&mut self) {
+        self.inspect = !self.inspect;
+    }
+
     pub fn open_load_menu(&mut self) {
         let dir = Self::save_dir();
         let mut list: Vec<String> = std::fs::read_dir(&dir)
@@ -431,6 +525,131 @@ impl App {
             width: 0.004,
             speed: 3.0,
         })
+    }
+}
+
+/// 游戏内的世界画布：相机、交互、渲染、提示。
+///
+/// 从 `update` 里抽出来的——它现在要挂在一个 `CentralPanel` 上，
+/// 而那个 panel 由 `ui::layout` 决定什么时候开。
+pub fn world_view(ui: &mut egui::Ui, app: &mut App) {
+
+            let (resp, painter) =
+                ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
+            let view_rect = resp.rect;
+
+            // ---- 相机 ----
+            let hover = ui.ctx().input(|i| i.pointer.hover_pos());
+            if let Some(p) = hover
+                && view_rect.contains(p)
+            {
+                let scroll = ui.ctx().input(|i| i.raw_scroll_delta.y);
+                if scroll.abs() > 0.0 {
+                    app.cam.zoom_at(p, view_rect, (scroll * 0.0015).exp());
+                }
+            }
+            if resp.dragged_by(egui::PointerButton::Secondary) {
+                let d = resp.drag_delta();
+                app.cam.center += Vec2::new(-d.x, d.y) / app.cam.zoom;
+            }
+
+            // ---- 交互 ----
+            let pointer = ui.ctx().input(|i| i.pointer.interact_pos());
+            if resp.drag_started_by(egui::PointerButton::Primary)
+                && let Some(p) = pointer
+            {
+                let w = app.cam.to_world(p, view_rect);
+                let mut d = Drag::new(w);
+                if app.tool == Tool::Hand {
+                    d.grabbed = app.piece_at(w);
+                }
+                app.drag = Some(d);
+            }
+            if resp.dragged_by(egui::PointerButton::Primary)
+                && let Some(p) = pointer
+                && let Some(d) = &mut app.drag
+            {
+                d.to = app.cam.to_world(p, view_rect);
+            }
+            if resp.drag_stopped_by(egui::PointerButton::Primary)
+                && let Some(d) = app.drag.take()
+            {
+                app.release(&d);
+            }
+            if app.tool == Tool::Hand
+                && resp.dragged_by(egui::PointerButton::Primary)
+                && let Some(p) = pointer
+            {
+                let w = app.cam.to_world(p, view_rect);
+                app.drag_piece(w);
+            }
+
+            // ---- 渲染 ----
+            let v = view::View {
+                sim: &app.sim,
+                cam: &app.cam,
+                heat: app.heat,
+                debug: app.debug,
+            };
+            v.paint(&painter, view_rect);
+
+            // 刀线预览
+            if app.tool == Tool::Knife
+                && let Some(d) = &app.drag
+            {
+                let a = app.cam.to_screen(d.from, view_rect);
+                let b = app.cam.to_screen(d.to, view_rect);
+                painter.line_segment(
+                    [a, b],
+                    egui::Stroke::new(2.0_f32, view::c32([255, 90, 90, 230])),
+                );
+                painter.circle_filled(a, 3.0, view::c32([255, 90, 90, 255]));
+                painter.circle_filled(b, 3.0, view::c32([255, 90, 90, 255]));
+            }
+
+            draw_overlay(app, &painter, view_rect);
+}
+
+/// 世界画布上的叠加：提示条、暂停角标、选中高亮。
+fn draw_overlay(app: &App, painter: &egui::Painter, view: egui::Rect) {
+    if let Some((msg, t)) = &app.toast {
+        let alpha = (t / 0.6).clamp(0.0, 1.0);
+        let pos = egui::pos2(view.center().x, view.bottom() - 34.0);
+        let galley = painter.layout_no_wrap(
+            msg.clone(),
+            egui::FontId::proportional(14.0),
+            view::c32([232, 230, 238, 255]),
+        );
+        let rect = egui::Align2::CENTER_CENTER.anchor_size(pos, galley.size());
+        painter.rect_filled(
+            rect.expand2(egui::vec2(12.0, 6.0)),
+            6.0,
+            view::c32([26, 25, 32, (alpha * 235.0) as u8]),
+        );
+        painter.galley(rect.min, galley, view::c32([232, 230, 238, 255]));
+    }
+    if app.paused {
+        painter.text(
+            view.right_top() + egui::vec2(-14.0, 12.0),
+            egui::Align2::RIGHT_TOP,
+            "已暂停",
+            egui::FontId::proportional(13.0),
+            view::c32([240, 190, 110, 220]),
+        );
+    }
+    if let Some(sel) = app.selected
+        && sel.index() < app.sim.body.pieces.len()
+        && !app.sim.body.pieces[sel.index()].deleted
+    {
+        let poly = app.sim.piece_polygon(sel);
+        if poly.len() >= 3 {
+            let mut pts: Vec<egui::Pos2> = poly.iter().map(|p| app.cam.to_screen(*p, view)).collect();
+            pts.push(pts[0]);
+            painter.add(egui::Shape::line(
+                pts,
+                egui::Stroke::new(1.6_f32, view::c32([240, 200, 120, 230])),
+            ));
+        }
     }
 }
 
@@ -465,17 +684,28 @@ impl eframe::App for App {
         }
 
         // ---- 全局快捷键 ----
+        let in_game = self.screen == ui::Screen::InGame;
         ctx.input(|i| {
-            if i.key_pressed(egui::Key::Space) {
+            if in_game && i.key_pressed(egui::Key::Space) {
                 self.paused = !self.paused;
             }
             for t in Tool::ALL {
-                if i.key_pressed(t.key()) {
+                if in_game && i.key_pressed(t.key()) {
                     self.tool = t;
                 }
             }
             if i.key_pressed(egui::Key::R) {
                 self.cam = Camera::default();
+            }
+            if i.key_pressed(egui::Key::Escape) {
+                match self.screen {
+                    ui::Screen::InGame => self.screen = ui::Screen::MainMenu,
+                    ui::Screen::WorldSelect => self.screen = ui::Screen::MainMenu,
+                    ui::Screen::MainMenu => {}
+                }
+            }
+            if i.key_pressed(egui::Key::Tab) && self.screen == ui::Screen::InGame {
+                self.inspect = !self.inspect;
             }
             if i.key_pressed(egui::Key::F1) {
                 self.debug = !self.debug;
@@ -494,85 +724,6 @@ impl eframe::App for App {
         self.tick_shot(ctx);
 
         ui::layout(ctx, self);
-
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(view::c32(anatomize_core::geom::ui::BG)))
-            .show(ctx, |ui| {
-                let (resp, painter) =
-                    ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
-                let view_rect = resp.rect;
-
-                // ---- 相机 ----
-                let hover = ctx.input(|i| i.pointer.hover_pos());
-                if let Some(p) = hover
-                    && view_rect.contains(p)
-                {
-                    let scroll = ctx.input(|i| i.raw_scroll_delta.y);
-                    if scroll.abs() > 0.0 {
-                        self.cam.zoom_at(p, view_rect, (scroll * 0.0015).exp());
-                    }
-                }
-                if resp.dragged_by(egui::PointerButton::Secondary) {
-                    let d = resp.drag_delta();
-                    self.cam.center += Vec2::new(-d.x, d.y) / self.cam.zoom;
-                }
-
-                // ---- 交互 ----
-                let pointer = ctx.input(|i| i.pointer.interact_pos());
-                if resp.drag_started_by(egui::PointerButton::Primary)
-                    && let Some(p) = pointer
-                {
-                    let w = self.cam.to_world(p, view_rect);
-                    let mut d = Drag::new(w);
-                    if self.tool == Tool::Hand {
-                        d.grabbed = self.piece_at(w);
-                    }
-                    self.drag = Some(d);
-                }
-                if resp.dragged_by(egui::PointerButton::Primary)
-                    && let Some(p) = pointer
-                    && let Some(d) = &mut self.drag
-                {
-                    d.to = self.cam.to_world(p, view_rect);
-                }
-                if resp.drag_stopped_by(egui::PointerButton::Primary)
-                    && let Some(d) = self.drag.take()
-                {
-                    self.release(&d);
-                }
-                if self.tool == Tool::Hand
-                    && resp.dragged_by(egui::PointerButton::Primary)
-                    && let Some(p) = pointer
-                {
-                    let w = self.cam.to_world(p, view_rect);
-                    self.drag_piece(w);
-                }
-
-                // ---- 渲染 ----
-                let v = view::View {
-                    sim: &self.sim,
-                    cam: &self.cam,
-                    heat: self.heat,
-                    debug: self.debug,
-                };
-                v.paint(&painter, view_rect);
-
-                // 刀线预览
-                if self.tool == Tool::Knife
-                    && let Some(d) = &self.drag
-                {
-                    let a = self.cam.to_screen(d.from, view_rect);
-                    let b = self.cam.to_screen(d.to, view_rect);
-                    painter.line_segment(
-                        [a, b],
-                        egui::Stroke::new(2.0_f32, view::c32([255, 90, 90, 230])),
-                    );
-                    painter.circle_filled(a, 3.0, view::c32([255, 90, 90, 255]));
-                    painter.circle_filled(b, 3.0, view::c32([255, 90, 90, 255]));
-                }
-
-                ui::overlay(self, &painter, view_rect);
-            });
 
         // 让时间流动起来（不请求重绘的话，暂停时窗口不刷新）
         ctx.request_repaint();

@@ -92,6 +92,20 @@ fn draw_tool(p: &Painter, r: Rect, tool: Tool, c: Color32) {
                 );
             }
         }
+        // 使用：火花
+        Tool::Use => {
+            let star = vec![
+                pt(0.5, 0.05),
+                pt(0.6, 0.4),
+                pt(0.95, 0.5),
+                pt(0.6, 0.6),
+                pt(0.5, 0.95),
+                pt(0.4, 0.6),
+                pt(0.05, 0.5),
+                pt(0.4, 0.4),
+            ];
+            p.add(Shape::convex_polygon(star, c, Stroke::NONE));
+        }
         // 删除：叉
         Tool::Delete => {
             line((0.18, 0.18), (0.82, 0.82));

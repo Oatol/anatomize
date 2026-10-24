@@ -5,6 +5,7 @@
 //!
 //! 本 crate 依赖 rapier2d，但不依赖 Bevy —— 渲染是别人的事。
 
+pub mod actions;
 pub mod edit;
 pub mod items;
 pub mod fracture;

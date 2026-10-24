@@ -271,6 +271,68 @@ pub fn add_stump(f: &mut TissueField, point: Vec2, radius_cm: f32, total_c: f32)
     hits.len()
 }
 
+/// 把一片区域从场里**抹掉**（变回 `Outside`）。
+///
+/// # 为什么需要这个
+///
+/// 组织场钉在**身体坐标系**里，不跟着碎片走（ADR-003）。这是对的：场是
+/// "这一具身体"的连续介质，碎片飞出去了就不属于它了。
+///
+/// 但"不属于"必须**写进场里**。不写的话，F1 热力图会在原来的位置继续画
+/// 那块已经飞走的肉——看起来就像贴了张图，跟身体的动作完全脱节。
+///
+/// 所以切开一块、删掉一块之后，都要把它的旧位置抹成 `Outside`。
+///
+/// 返回抹掉的 texel 数。
+pub fn clear_region(f: &mut TissueField, polygons: &[Vec<Vec2>]) -> usize {
+    let w = f.w as usize;
+    let h = f.h as usize;
+    let mut n = 0usize;
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if f.kind[i] == TissueKind::Outside {
+                continue;
+            }
+            // texel 中心在身体局部厘米坐标里
+            let p = Vec2::new(
+                f.origin.x + (x as f32 + 0.5) * f.texel_cm,
+                f.origin.y + (y as f32 + 0.5) * f.texel_cm,
+            );
+            if polygons.iter().any(|poly| point_in_poly(poly, p)) {
+                f.kind[i] = TissueKind::Outside;
+                f.k0[i] = 0.0;
+                f.stump[i] = 0.0;
+                f.wound[i] = false;
+                f.clamped[i] = false;
+                f.inlet[i] = false;
+                f.damage[i] = 0.0;
+                f.pooled[i] = 0.0;
+                f.o2[i] = 0.0;
+                f.perfusion[i] = 0.0;
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
+/// 点在凸多边形内（含边界）。
+fn point_in_poly(poly: &[Vec2], p: Vec2) -> bool {
+    let n = poly.len();
+    if n < 3 {
+        return false;
+    }
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        if (b - a).perp_dot(p - a) < 0.0 {
+            return false;
+        }
+    }
+    true
+}
+
 /// 切断一片区域的血供：把落在区域内的组织 texel 的 `k0` 清零。
 ///
 /// `k0` 是血管床的基础电导，清零之后该 texel 的 `bed` / `conductance` /

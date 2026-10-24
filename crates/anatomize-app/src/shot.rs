@@ -26,6 +26,10 @@ pub struct ShotPlan {
     pub requested: bool,
     /// 截图前要执行的动作。
     pub action: Option<Action>,
+    /// 拍主菜单而不是游戏内。
+    pub menu: bool,
+    /// 打开检视窗口。
+    pub inspect: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +44,8 @@ pub enum Action {
     Sever,
     /// 生成几个道具
     Props,
+    /// 生成手雷并引爆
+    Boom,
 }
 
 impl ShotPlan {
@@ -61,6 +67,7 @@ impl ShotPlan {
                 "feed" => Some(Action::Feed),
                 "sever" => Some(Action::Sever),
                 "props" => Some(Action::Props),
+                "boom" => Some(Action::Boom),
                 _ => None,
             });
         Some(Self {
@@ -68,6 +75,8 @@ impl ShotPlan {
             countdown: 90,
             requested: false,
             action,
+            menu: args.iter().any(|a| a == "--menu"),
+            inspect: args.iter().any(|a| a == "--inspect"),
         })
     }
 }

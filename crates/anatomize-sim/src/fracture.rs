@@ -366,6 +366,30 @@ impl Sim {
         self.body.parts[part.index()].body = self.body.pieces[primary.index()].body;
         self.body.parts[part.index()].collider = self.body.pieces[primary.index()].collider;
 
+        // --- 4.5 飞走的那半在原位变成 Outside ---
+        //
+        // 场钉在身体坐标系里（ADR-003），碎片飞出去之后场不会跟着走。
+        // 不抹掉的话，F1 热力图会在原位置继续画那块已经飞走的肉——
+        // 看起来就是"贴了张图"，跟身体完全脱节。
+        if let Some(t) = self.tissue.as_mut() {
+            let offset = self.plan.parts[part.index()].offset;
+            let mut to_clear: Vec<Vec<Vec2>> = Vec::new();
+            for &id in &new_ids {
+                if id == primary {
+                    continue;
+                }
+                let poly: Vec<Vec2> = self.body.pieces[id.index()]
+                    .polygon
+                    .iter()
+                    .map(|v| *v + offset)
+                    .collect();
+                to_clear.push(poly);
+            }
+            if !to_clear.is_empty() {
+                anatomize_tissue::clear_region(&mut t.field, &to_clear);
+            }
+        }
+
         // --- 5. 重挂关节：锚点落在哪块就挂哪块 ---
         for s in snaps {
             let side_a = self.resolve_anchor_piece(s.a, pid, &new_ids, s.anchor_a);

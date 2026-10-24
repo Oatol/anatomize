@@ -129,3 +129,108 @@ fn striking_a_frozen_piece_is_a_no_op() {
     let (pos2, _) = sim.piece_pose(id);
     assert!((pos2 - pos).length() < 1e-4, "冻结的块不该动");
 }
+
+/// 切掉的肢体必须在场里变成 Outside。
+///
+/// 不这么做的话，F1 热力图会在原位置继续画那块已经飞走的肉——
+/// 看起来就是"贴了张图"，和身体的动作完全脱节。
+#[test]
+fn a_detached_piece_leaves_the_field() {
+    let mut sim = world();
+    let before = outside_count(&sim);
+
+    // 在左大腿中间切一刀
+    let thigh = sim
+        .plan
+        .parts
+        .iter()
+        .position(|p| p.name == "thigh_l")
+        .unwrap();
+    let (pos, _) = sim.piece_pose(sim.body.primary[thigh]);
+    let cut = anatomize_cut::CutSegment {
+        a: pos - Vec2::new(0.06, 0.0),
+        b: pos + Vec2::new(0.06, 0.0),
+        width: 0.005,
+        speed: 2.0,
+    };
+    sim.slice(&cut);
+    let after = outside_count(&sim);
+
+    let cleared = after.saturating_sub(before);
+    println!("切一刀：场里 Outside 从 {before} 涨到 {after}（+{cleared} texel）");
+    assert!(
+        cleared > 500,
+        "切开之后应该有一片区域变成 Outside，实际只多了 {cleared}"
+    );
+
+    // 飞走那半的位置应该真的不在场里了
+    let pieces = sim.body.pieces.len();
+    assert!(pieces > 11, "应该多了一块");
+}
+
+fn outside_count(sim: &Sim) -> usize {
+    sim.tissue
+        .as_ref()
+        .map(|t| {
+            t.field
+                .kind
+                .iter()
+                .filter(|k| **k == anatomize_tissue::TissueKind::Outside)
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// 爆炸：半径内的块被掀飞，自己消失。
+#[test]
+fn a_grenade_throws_nearby_pieces() {
+    let mut sim = world();
+    let near = sim.spawn_item_by_id("crate", Vec2::new(0.6, 0.6)).unwrap();
+    let far = sim.spawn_item_by_id("crate", Vec2::new(-1.6, 0.6)).unwrap();
+    let grenade = sim.spawn_item_by_id("grenade", Vec2::new(0.5, 0.5)).unwrap();
+    for _ in 0..20 {
+        sim.step();
+    }
+    let v_far = sim.piece_velocity(far);
+    let n = sim.detonate(grenade, 1.6, 140.0);
+    println!("炸了 {n} 块");
+    assert!(sim.body.pieces[grenade.index()].deleted, "手雷应该没了");
+    sim.step();
+    let v_near = sim.piece_velocity(near);
+    let v_far2 = sim.piece_velocity(far);
+    println!("近处 {v_far:?} → {v_near:?}，远处 {v_far:?} → {v_far2:?}");
+    assert!(v_near.length() > 1.0, "近处的块应该被掀飞");
+    assert!(
+        (v_far2 - v_far).length() < 1.0,
+        "半径外的块不该受影响"
+    );
+}
+
+/// 开火：射线打中身体就切一刀。
+#[test]
+fn firing_a_gun_cuts_what_it_hits() {
+    let mut sim = world();
+    let thigh = sim
+        .plan
+        .parts
+        .iter()
+        .position(|p| p.name == "thigh_l")
+        .unwrap();
+    let (target, _) = sim.piece_pose(sim.body.primary[thigh]);
+    // 枪放在目标左边 1.5m，朝右
+    let gun = sim
+        .spawn_item_by_id("pistol", target - Vec2::new(1.5, 0.0))
+        .unwrap();
+    for _ in 0..20 {
+        sim.step();
+    }
+    let pieces_before = sim.body.pieces.len();
+    let hit = sim.fire(gun, 12.0);
+    let pieces_after = sim.body.pieces.len();
+    println!("开火命中 {hit:?}，块数 {pieces_before} → {pieces_after}");
+    assert!(hit.is_some(), "应该打中点什么");
+    assert!(
+        pieces_after > pieces_before,
+        "打中身体应该切出新块"
+    );
+}

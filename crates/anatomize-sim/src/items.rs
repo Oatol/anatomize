@@ -99,8 +99,11 @@ pub struct ItemDef {
     /// 行为标签。宿主按它分发（`explosive` / `gun` / `food` …）。
     ///
     /// 目录不实现行为，只声明"我是什么"。这样加物品和加行为可以分开做。
+    ///
+    /// 用空字符串表示"没有行为"而不是 `Option`：RON 里 `Option` 要写成
+    /// `Some("gun")`，多一层括号容易写错；空串在 RON 里就是 `tag: ""`。
     #[serde(default)]
-    pub tag: Option<String>,
+    pub tag: String,
 }
 
 impl ItemDef {
