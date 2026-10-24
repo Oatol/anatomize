@@ -1,0 +1,31 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# 构建产物
+/dist/
+/build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地工具状态（不进版本库）
+.workbuddy-ai/
+
+# 运行时输出
+/logs/
+/screenshots/
+*.log
