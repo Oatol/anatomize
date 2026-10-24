@@ -65,25 +65,42 @@ impl TissueSnapshot {
 
 /// 一帧完整状态。
 #[derive(Debug, Clone)]
+/// 一具生物在快照里的状态。
+pub struct CreatureSnapshot {
+    pub primary: Vec<u32>,
+    pub bus: PhysioBus,
+    pub ambient_c: f32,
+    pub tissue_metab_base: f32,
+    pub tissue: Option<TissueSnapshot>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Snapshot {
     pub tick: u64,
     pub pieces: Vec<PieceSave>,
-    pub primary: Vec<u32>,
     pub joints: Vec<JointSave>,
     /// 玩家连接。快照不带的话，回滚 5 秒会把刚搭好的机器拆散。
     pub conns: Vec<crate::save::ConnSave>,
-    pub bus: PhysioBus,
-    pub ambient_c: f32,
-    pub tissue: Option<TissueSnapshot>,
+    /// 所有生物（每具一份生理 + 组织场）。
+    pub creatures: Vec<CreatureSnapshot>,
     pub slices: u32,
     pub injuries: Vec<(anatomize_core::JointId, crate::JointState, f32)>,
 }
 
 impl Snapshot {
     pub fn bytes(&self) -> usize {
-        let tissue = self.tissue.as_ref().map_or(0, |t| t.bytes());
+        let tissue: usize = self
+            .creatures
+            .iter()
+            .map(|c| c.tissue.as_ref().map_or(0, |t| t.bytes()))
+            .sum();
         let pieces: usize = self.pieces.iter().map(|p| p.polygon.len() * 8 + 64).sum();
-        tissue + pieces + self.joints.len() * 96 + self.conns.len() * 64 + 256
+        tissue
+            + pieces
+            + self.joints.len() * 96
+            + self.conns.len() * 64
+            + self.creatures.len() * 128
+            + 256
     }
 }
 
@@ -203,6 +220,7 @@ impl Sim {
                 }
             };
             pieces.push(PieceSave {
+                creature: p.creature,
                 part: p.part,
                 polygon: p.polygon.clone(),
                 centroid: p.centroid,
@@ -221,6 +239,7 @@ impl Sim {
             .joints
             .iter()
             .map(|j| JointSave {
+                creature: j.creature,
                 a: j.a.0,
                 b: j.b.0,
                 anchor_a: j.anchor_a,
@@ -232,17 +251,27 @@ impl Sim {
             })
             .collect();
 
-        let tissue = self.tissue.as_ref().map(|t| TissueSnapshot {
-            k0: t.field.k0.clone(),
-            stump: t.field.stump.clone(),
-            wound: t.field.wound.clone(),
-            clamped: t.field.clamped.clone(),
-            inlet: t.field.inlet.clone(),
-            damage: t.field.damage.clone(),
-            pooled: t.field.pooled.clone(),
-            o2: t.field.o2.clone(),
-            temp: t.field.temp.clone(),
-        });
+        let creatures = self
+            .creatures
+            .iter()
+            .map(|c| CreatureSnapshot {
+                primary: c.primary.iter().map(|p| p.0).collect(),
+                bus: c.physio.bus,
+                ambient_c: c.ambient_c,
+                tissue_metab_base: c.tissue_metab_base,
+                tissue: c.tissue.as_ref().map(|t| TissueSnapshot {
+                    k0: t.field.k0.clone(),
+                    stump: t.field.stump.clone(),
+                    wound: t.field.wound.clone(),
+                    clamped: t.field.clamped.clone(),
+                    inlet: t.field.inlet.clone(),
+                    damage: t.field.damage.clone(),
+                    pooled: t.field.pooled.clone(),
+                    o2: t.field.o2.clone(),
+                    temp: t.field.temp.clone(),
+                }),
+            })
+            .collect();
 
         Snapshot {
             conns: self
@@ -262,11 +291,8 @@ impl Sim {
                 .collect(),
             tick: self.tick.0,
             pieces,
-            primary: self.body.primary.iter().map(|p| p.0).collect(),
             joints,
-            bus: self.physio.bus,
-            ambient_c: self.ambient_c,
-            tissue,
+            creatures,
             slices: self.slices,
             injuries: self.injuries.clone(),
         }
@@ -322,6 +348,7 @@ impl Sim {
                     frozen_pose: Some((ps.pos, ps.rot)),
                     item: ps.item,
                     heat: None,
+                    creature: ps.creature,
                     deleted: false,
                 });
                 continue;
@@ -366,18 +393,46 @@ impl Sim {
                 mass: ps.mass,
                 still_s: 0.0,
                 frozen_pose: None,
-                item: None,
+                item: ps.item,
                 heat: None,
+                creature: ps.creature,
                 deleted: false,
             });
         }
 
-        self.body.primary = snap.primary.iter().map(|i| PieceId(*i)).collect();
-        for (i, inst) in self.body.parts.iter_mut().enumerate() {
-            if let Some(p) = self.body.primary.get(i) {
-                let piece = &self.body.pieces[p.index()];
-                inst.body = piece.body;
-                inst.collider = piece.collider;
+        // 每具生物的代表块 + 部件句柄 + 生理 + 组织场
+        for (ci, cs) in snap.creatures.iter().enumerate() {
+            if ci >= self.creatures.len() {
+                break;
+            }
+            let c = &mut self.creatures[ci];
+            c.primary = cs.primary.iter().map(|i| PieceId(*i)).collect();
+            c.physio.bus = cs.bus;
+            c.ambient_c = cs.ambient_c;
+            c.tissue_metab_base = cs.tissue_metab_base;
+            let prim: Vec<PieceId> = c.primary.clone();
+            for (i, inst) in c.parts.iter_mut().enumerate() {
+                if let Some(p) = prim.get(i) {
+                    let piece = &self.body.pieces[p.index()];
+                    inst.body = piece.body;
+                    inst.collider = piece.collider;
+                }
+            }
+            // 组织场就地覆盖：长度对不上就说明场换了尺寸，跳过
+            if let (Some(ts), Some(t)) = (cs.tissue.as_ref(), c.tissue.as_mut())
+                && t.field.k0.len() == ts.k0.len()
+            {
+                t.field.k0.copy_from_slice(&ts.k0);
+                t.field.stump.copy_from_slice(&ts.stump);
+                t.field.wound.copy_from_slice(&ts.wound);
+                t.field.clamped.copy_from_slice(&ts.clamped);
+                t.field.inlet.copy_from_slice(&ts.inlet);
+                t.field.damage.copy_from_slice(&ts.damage);
+                t.field.pooled.copy_from_slice(&ts.pooled);
+                t.field.o2.copy_from_slice(&ts.o2);
+                t.field.temp.copy_from_slice(&ts.temp);
+                // 压力场不用恢复——它本来就是从 k0/wound/MAP 解出来的
+                t.warmup(cs.bus.map);
             }
         }
 
@@ -449,6 +504,7 @@ impl Sim {
                 tether,
                 tether_rest: js.tether_rest,
                 cuttable: js.cuttable,
+                creature: js.creature,
             });
         }
 
@@ -478,26 +534,10 @@ impl Sim {
             }
         }
 
-        // 4. 生理 + 组织场
+        // 4. 生理 + 组织场：每具已经在上面按快照恢复了
         self.tick = anatomize_core::Tick(snap.tick);
-        self.physio.bus = snap.bus;
-        self.ambient_c = snap.ambient_c;
         self.slices = snap.slices;
         self.injuries = snap.injuries.clone();
-
-        if let (Some(ts), Some(t)) = (&snap.tissue, self.tissue.as_mut()) {
-            t.field.k0.copy_from_slice(&ts.k0);
-            t.field.stump.copy_from_slice(&ts.stump);
-            t.field.wound.copy_from_slice(&ts.wound);
-            t.field.clamped.copy_from_slice(&ts.clamped);
-            t.field.inlet.copy_from_slice(&ts.inlet);
-            t.field.damage.copy_from_slice(&ts.damage);
-            t.field.pooled.copy_from_slice(&ts.pooled);
-            t.field.o2.copy_from_slice(&ts.o2);
-            t.field.temp.copy_from_slice(&ts.temp);
-            // 压力场不用恢复——它本来就是从 k0/wound/MAP 解出来的
-            t.warmup(snap.bus.map);
-        }
     }
 
     /// 退回到 `seconds` 秒前。返回实际退了多少秒。

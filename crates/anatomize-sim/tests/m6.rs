@@ -28,7 +28,7 @@ fn part(sim: &Sim, name: &str) -> PartId {
 /// 按装配坐标切会切到隔壁的小腿上去。
 fn cut_at(sim: &Sim, name: &str, dy: f32) -> CutSegment {
     let i = sim.plan.parts.iter().position(|p| p.name == name).unwrap();
-    let (pos, _) = sim.piece_pose(sim.body.primary[i]);
+    let (pos, _) = sim.piece_pose(sim.creatures[sim.active].primary[i]);
     CutSegment {
         a: Vec2::new(pos.x - 0.06, pos.y + dy),
         b: Vec2::new(pos.x + 0.06, pos.y + dy),
@@ -358,8 +358,8 @@ fn save_and_load_loses_nothing() {
     let mut sim2 = Sim::load(&back, -80.0).expect("重建失败");
 
     // --- 1. 瞬时生理量 ---
-    let a = sim.physio.bus;
-    let b = sim2.physio.bus;
+    let a = sim.creatures[sim.active].physio.bus;
+    let b = sim2.creatures[sim2.active].physio.bus;
     let fields: [(&str, f32, f32); 12] = [
         ("血容量", a.blood_volume, b.blood_volume),
         ("MAP", a.map, b.map),
@@ -411,8 +411,8 @@ fn save_and_load_loses_nothing() {
         sim.step();
         sim2.step();
     }
-    let a = sim.physio.bus;
-    let b = sim2.physio.bus;
+    let a = sim.creatures[sim.active].physio.bus;
+    let b = sim2.creatures[sim2.active].physio.bus;
     println!(
         "10 秒后：MAP {:.4} / {:.4}，HR {:.4} / {:.4}，意识 {:.4} / {:.4}",
         a.map, b.map, a.heart_rate, b.heart_rate, a.consciousness, b.consciousness
@@ -447,8 +447,8 @@ fn a_tissue_tick_fits_the_frame_budget() {
         });
     }
 
-    let map = sim.physio.bus.map;
-    let tissue = sim.tissue.as_mut().unwrap();
+    let map = sim.creatures[sim.active].physio.bus.map;
+    let tissue = sim.creatures[sim.active].tissue.as_mut().unwrap();
     // 预热
     for _ in 0..20 {
         tissue.step(map, 1.0 / 20.0);

@@ -323,7 +323,7 @@ fn grabbing_a_hand_rotates_the_body() {
         .iter()
         .position(|p| p.name == "forearm_l" || p.name == "hand_l")
         .expect("有前臂或手");
-    let id = sim.body.primary[hand];
+    let id = sim.creatures[sim.active].primary[hand];
     let (hp, _) = sim.piece_pose(id);
 
     // 抓在手的**外端**（离质心远的地方），往右上方拉
@@ -350,7 +350,7 @@ fn grabbing_a_hand_rotates_the_body() {
 #[test]
 fn releasing_the_grab_stops_the_pull() {
     let mut sim = world();
-    let id = sim.body.primary[0];
+    let id = sim.creatures[sim.active].primary[0];
     let (p, _) = sim.piece_pose(id);
     sim.grab(id, p);
     sim.drag_to(p + Vec2::new(2.0, 1.0));
@@ -426,7 +426,7 @@ fn a_grab_converges_instead_of_oscillating() {
         .iter()
         .position(|p| p.name == "forearm_l")
         .expect("左前臂");
-    let id = sim.body.primary[arm];
+    let id = sim.creatures[sim.active].primary[arm];
     let (p, _) = sim.piece_pose(id);
 
     // 抓在**外端**（离质心 6cm），目标就设在原地
@@ -501,13 +501,13 @@ fn a_spawned_body_stays_upright() {
     let mut prev = 0.0f32;
     for k in 0..600 {
         sim.step();
-        let (_, rot) = sim.piece_pose(sim.body.primary[0]);
+        let (_, rot) = sim.piece_pose(sim.creatures[sim.active].primary[0]);
         if k > 120 {
             jitter = jitter.max(((rot - prev) * 60.0).abs());
         }
         prev = rot;
     }
-    let (pos, rot) = sim.piece_pose(sim.body.primary[0]);
+    let (pos, rot) = sim.piece_pose(sim.creatures[sim.active].primary[0]);
     println!(
         "10 秒后：骨盆 ({:.3}, {:.3})，倾角 {:.3} rad（{:.1}°），抖动 {:.2} rad/s",
         pos.x,
@@ -541,7 +541,7 @@ fn disabling_posture_actually_lets_go() {
         .iter()
         .position(|p| p.name == "forearm_l")
         .unwrap();
-    let id = sim.body.primary[arm];
+    let id = sim.creatures[sim.active].primary[arm];
     let (p, _) = sim.piece_pose(id);
     sim.strike_piece(id, Vec2::new(200.0, 60.0), p);
     for _ in 0..120 {

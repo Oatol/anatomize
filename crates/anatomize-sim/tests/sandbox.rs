@@ -85,7 +85,7 @@ fn freezing_a_body_part_does_not_break_joints() {
         .iter()
         .position(|p| p.name == "thigh_l")
         .unwrap();
-    let id = sim.body.primary[thigh];
+    let id = sim.creatures[sim.active].primary[thigh];
     assert!(sim.set_frozen(id, true));
     for _ in 0..60 {
         sim.step();
@@ -146,7 +146,7 @@ fn a_detached_piece_leaves_the_field() {
         .iter()
         .position(|p| p.name == "thigh_l")
         .unwrap();
-    let (pos, _) = sim.piece_pose(sim.body.primary[thigh]);
+    let (pos, _) = sim.piece_pose(sim.creatures[sim.active].primary[thigh]);
     let cut = anatomize_cut::CutSegment {
         a: pos - Vec2::new(0.06, 0.0),
         b: pos + Vec2::new(0.06, 0.0),
@@ -169,7 +169,7 @@ fn a_detached_piece_leaves_the_field() {
 }
 
 fn outside_count(sim: &Sim) -> usize {
-    sim.tissue
+    sim.creatures[sim.active].tissue
         .as_ref()
         .map(|t| {
             t.field
@@ -216,7 +216,7 @@ fn firing_a_gun_cuts_what_it_hits() {
         .iter()
         .position(|p| p.name == "thigh_l")
         .unwrap();
-    let (target, _) = sim.piece_pose(sim.body.primary[thigh]);
+    let (target, _) = sim.piece_pose(sim.creatures[sim.active].primary[thigh]);
     // 枪放在目标左边 1.5m，朝右
     let gun = sim
         .spawn_item_by_id("pistol", target - Vec2::new(1.5, 0.0))
@@ -245,7 +245,7 @@ fn freezing_while_posture_is_on_does_not_crash() {
     }
     // 冻结一块连着关节的身体部件
     let thigh = sim.plan.parts.iter().position(|p| p.name == "thigh_l").unwrap();
-    let id = sim.body.primary[thigh];
+    let id = sim.creatures[sim.active].primary[thigh];
     sim.set_frozen(id, true);
     for _ in 0..60 {
         sim.step(); // 姿态控制每帧都会遍历关节
@@ -296,7 +296,7 @@ fn a_detached_piece_carries_its_own_heat() {
         .iter()
         .position(|p| p.name == "thigh_l")
         .unwrap();
-    let (pos, _) = sim.piece_pose(sim.body.primary[thigh]);
+    let (pos, _) = sim.piece_pose(sim.creatures[sim.active].primary[thigh]);
     let cut = anatomize_cut::CutSegment {
         a: pos - Vec2::new(0.06, 0.0),
         b: pos + Vec2::new(0.06, 0.0),

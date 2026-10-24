@@ -189,6 +189,20 @@ fn actions(ui: &mut egui::Ui, app: &mut App) {
         }
     });
     ui.horizontal(|ui| {
+        if ui
+            .small_button("生成人体")
+            .on_hover_text("在光标处再放一具人偶（各自有生理和组织场）")
+            .clicked()
+        {
+            app.spawn_creature();
+        }
+        ui.label(
+            RichText::new(format!("{} 具", app.sim.creatures.len()))
+                .size(10.0)
+                .color(c32(DIM)),
+        );
+    });
+    ui.horizontal(|ui| {
         if ui.small_button("清除一切").clicked() {
             let w = app.sim.world;
             app.reset_world(w);

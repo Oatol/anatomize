@@ -117,7 +117,7 @@ pub fn paint_piece(cv: &mut Canvas, sim: &Sim, id: PieceId, outline: bool) {
 /// 场固定在**身体坐标系**（ADR-003），所以要先找到身体原点在世界里的位置。
 /// 这里用躯干块的位置反推——P0 只有一具身体，够用。
 pub fn paint_heatmap(cv: &mut Canvas, sim: &Sim, channel: HeatChannel, alpha: u8) {
-    let Some(t) = sim.tissue.as_ref() else {
+    let Some(t) = sim.creatures[sim.active].tissue.as_ref() else {
         return;
     };
     let f = &t.field;

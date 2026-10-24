@@ -202,7 +202,7 @@ fn scene_hammer() -> Scene {
         sim.step();
     }
     let knee = sim.joint_index("knee_l").unwrap();
-    let targets = sim.posture.as_ref().unwrap().targets.clone();
+    let targets = sim.creatures[sim.active].posture.as_ref().unwrap().targets.clone();
     let knee_target = targets[knee];
     sim.disable_posture();
 
@@ -243,7 +243,7 @@ fn scene_hammer() -> Scene {
 
     // 受伤后把姿态控制器打开、套回健康时的目标，看它拉不拉得住
     sim.enable_posture();
-    sim.posture.as_mut().unwrap().targets = targets;
+    sim.creatures[sim.active].posture.as_mut().unwrap().targets = targets;
     for _ in 0..240 {
         sim.step();
         frame += 1;

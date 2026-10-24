@@ -489,6 +489,35 @@ impl App {
                 self.sim.sever_joint("knee_l");
                 self.sim.sever_joint("hip_r");
             }
+            shot::Action::Crowd => {
+                // 再放两具：左边一具、右边一具，各带自己的生理和组织场
+                let stand = self.sim.plan.stand_height();
+                for dx in [-0.62f32, 0.62] {
+                    self.sim.add_creature(Vec2::new(dx, stand));
+                    self.sim.attach_tissue(&TissueConfig::asset());
+                    self.sim.stand();
+                }
+                // 把中间那具（第一具）的腿切一刀，看得出"只影响一具"
+                let thigh = self
+                    .sim
+                    .plan
+                    .parts
+                    .iter()
+                    .position(|p| p.name == "thigh_r")
+                    .unwrap();
+                let id = self.sim.creatures[0].primary[thigh];
+                let (pos, _) = self.sim.piece_pose(id);
+                let seg = CutSegment {
+                    a: pos - Vec2::new(0.07, 0.0),
+                    b: pos + Vec2::new(0.07, 0.0),
+                    width: 0.004,
+                    speed: 3.0,
+                };
+                self.sim.cut_joints_on(&seg, false);
+                self.sim.slice(&seg);
+                self.sim.cut(&seg);
+                self.sim.sever_joint("knee_r");
+            }
             shot::Action::Build => {
                 // 一台"天平" + 一组铰链 + 一对活塞。
                 //
@@ -582,6 +611,25 @@ impl App {
     }
 
     /// 在视野中心生成一个物品。
+    /// 在光标处再生成一具人偶。
+    ///
+    /// 多 ragdoll 的入口。新的一具自动成为 `active`（刚造出来的那个应该被选中），
+    /// 生理 / 组织场 / 姿态控制器都是它自己的——两具各流各的血。
+    pub fn spawn_creature(&mut self) {
+        let at = self.cursor_world;
+        let stand = self.sim.plan.stand_height();
+        // 放在光标处，但脚要落地：光标可能指在天上
+        let at = Vec2::new(at.x, at.y.max(stand * 0.6));
+        let idx = self.sim.add_creature(at);
+        self.sim.attach_tissue(&TissueConfig::asset());
+        self.sim.stand();
+        let name = self.sim.creatures[idx].name.clone();
+        self.say(format!(
+            "生成了{name}（共 {} 具）",
+            self.sim.creatures.len()
+        ));
+    }
+
     /// 在光标处放一个物品。`mirror` = 左右镜像（E 键）。
     pub fn place_item(&mut self, mirror: bool) {
         let Some(idx) = self.item_pick else {
@@ -707,8 +755,9 @@ impl App {
                 if p.deleted || p.part == anatomize_core::PartId::NONE {
                     return false;
                 }
-                let id = PieceId(i as u32);
-                self.sim.body.primary[p.part.index()] != id
+                // 碎片 = **不是代表块**的身体块。用这块自己的生物判断，
+                // 不能拿 active 的——两具身体同时被切过的话会数错。
+                !self.sim.is_primary(PieceId(i as u32))
             })
             .map(|i| PieceId(i as u32))
             .collect();
@@ -746,7 +795,9 @@ impl App {
     /// 在某个部件当前中心横切一刀。
     fn cut_at(&self, part: &str, dy: f32) -> Option<CutSegment> {
         let i = self.sim.plan.parts.iter().position(|p| p.name == part)?;
-        let (pos, _) = self.sim.piece_pose(self.sim.body.primary[i]);
+        let (pos, _) = self
+            .sim
+            .piece_pose(self.sim.creatures[self.sim.active].primary[i]);
         let at = pos + Vec2::new(0.0, dy);
         Some(CutSegment {
             a: at - Vec2::new(0.07, 0.0),

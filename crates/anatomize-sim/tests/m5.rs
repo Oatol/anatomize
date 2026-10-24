@@ -263,7 +263,7 @@ fn posture_trial(injure: bool) -> Trial {
     // 不用"当前姿态"当目标（`Posture::holding`）——那样受伤组的基线会被
     // 伤腿带歪，A/B 就不成立了。这里要问的是"同一个目标，哪条腿跟得上"。
     sim.stand();
-    if let Some(p) = sim.posture.as_mut() {
+    if let Some(p) = sim.creatures[sim.active].posture.as_mut() {
         // 这具身体吊在 y=40 的半空，平衡辅助会把它横着推走——测试里关掉。
         p.balance = 0.0;
     }
@@ -272,7 +272,7 @@ fn posture_trial(injure: bool) -> Trial {
     }
 
     let err = |i: usize| {
-        let target = sim.posture.as_ref().unwrap().targets[i];
+        let target = sim.creatures[sim.active].posture.as_ref().unwrap().targets[i];
         (sim.joint_load(i).angle - target).abs()
     };
     let h = sim.body.joints[knee_l].health;
@@ -332,7 +332,7 @@ fn losing_consciousness_removes_the_posture() {
     }
     let tone_awake = sim.muscle_tone();
 
-    sim.physio.bus.consciousness = 0.0;
+    sim.creatures[sim.active].physio.bus.consciousness = 0.0;
     for _ in 0..10 {
         sim.step();
     }

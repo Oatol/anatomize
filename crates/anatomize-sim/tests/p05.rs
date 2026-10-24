@@ -61,7 +61,7 @@ fn the_buffer_holds_five_seconds() {
 #[test]
 fn rewinding_undoes_the_cut() {
     let mut sim = world();
-    let vol_before = sim.physio.bus.blood_volume;
+    let vol_before = sim.creatures[sim.active].physio.bus.blood_volume;
     let pieces_before = sim.body.pieces.len();
     assert_eq!(sim.hemorrhage_ml_s(), 0.0, "还没切，不该出血");
 
@@ -74,7 +74,7 @@ fn rewinding_undoes_the_cut() {
     for _ in 0..120 {
         sim.step();
     }
-    let vol_after = sim.physio.bus.blood_volume;
+    let vol_after = sim.creatures[sim.active].physio.bus.blood_volume;
     let lost = vol_before - vol_after;
     println!("2 秒流掉 {lost:.1} mL，血容量 {vol_before:.0} → {vol_after:.0}");
     assert!(lost > 20.0, "2 秒应该流掉几十毫升");
@@ -83,7 +83,7 @@ fn rewinding_undoes_the_cut() {
     println!("退回 {back:.2} 秒");
 
     let bleed_now = sim.hemorrhage_ml_s();
-    let vol_now = sim.physio.bus.blood_volume;
+    let vol_now = sim.creatures[sim.active].physio.bus.blood_volume;
     println!(
         "退回去之后：出血 {bleed_now:.3} mL/s，血容量 {vol_now:.1}（切之前 {vol_before:.1}），{} 块",
         sim.body.pieces.len()
@@ -114,7 +114,7 @@ fn rewinding_undoes_the_slicing_too() {
         .iter()
         .position(|p| p.name == "thigh_l")
         .unwrap();
-    let (pos, _) = sim.piece_pose(sim.body.primary[thigh]);
+    let (pos, _) = sim.piece_pose(sim.creatures[sim.active].primary[thigh]);
     let cut = CutSegment {
         a: pos - Vec2::new(0.06, 0.0),
         b: pos + Vec2::new(0.06, 0.0),
@@ -176,11 +176,11 @@ fn the_world_keeps_running_after_a_rewind() {
     let d = sim.diagnostics();
     println!(
         "回滚后再跑 10 秒：MAP {:.1}，血容量 {:.0}，最大速度 {:.2} m/s，NaN {}",
-        sim.physio.bus.map, sim.physio.bus.blood_volume, d.max_speed, d.nan
+        sim.creatures[sim.active].physio.bus.map, sim.creatures[sim.active].physio.bus.blood_volume, d.max_speed, d.nan
     );
     assert!(!d.nan);
     assert!(d.max_speed < 100.0);
-    assert!(sim.physio.bus.map.is_finite());
+    assert!(sim.creatures[sim.active].physio.bus.map.is_finite());
     // 退回去再流一遍，还是会失血——回溯不是治疗
-    assert!(sim.physio.bus.blood_volume < 5000.0);
+    assert!(sim.creatures[sim.active].physio.bus.blood_volume < 5000.0);
 }

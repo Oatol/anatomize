@@ -7,6 +7,7 @@
 
 pub mod actions;
 pub mod connect;
+pub mod creature;
 pub mod edit;
 pub mod fracture;
 pub mod grab;
@@ -17,6 +18,7 @@ pub mod save;
 pub mod sever;
 
 pub use connect::{Conn, ConnKind};
+pub use creature::Creature;
 pub use fracture::{FractureConfig, SliceReport};
 pub use grab::Grab;
 pub use items::{Category, ItemCatalog, ItemDef, Shape};
@@ -169,6 +171,8 @@ pub struct JointInstance {
     pub tether: Option<ImpulseJointHandle>,
     /// tether 的静止长度（米），= 装配时两锚点的间距。
     pub tether_rest: f32,
+    /// 属于哪一具生物。
+    pub creature: u16,
     /// 这一刀能不能把它切断。
     ///
     /// 抄 MaD2 的 `jointUserData.cuttable`：装甲、武器挂架、自动关节那些
@@ -232,6 +236,12 @@ pub struct Piece {
     ///
     /// `None` = 主块（它还在场里，每帧现采样）。
     pub heat: Option<anatomize_tissue::HeatGrid>,
+    /// 属于哪一具生物（`Sim::creatures` 的下标）。
+    ///
+    /// 道具是 `u16::MAX`（不属于任何一具）。有了这个标签，切割 / 冻结 /
+    /// 删除 / 拾取 / 渲染全都不用改——它们只认块，需要按生物区分的
+    /// 只有生理、组织场、姿态。
+    pub creature: u16,
     /// 被删除工具移除。刚体已经没了，渲染也跳过。
     ///
     /// 不做 `Vec::remove` 是因为 `PieceId` 就是下标——删一个会让后面所有
@@ -247,15 +257,24 @@ impl Piece {
 
 /// 一具装在物理世界里的人。
 pub struct BodyInstance {
-    pub parts: Vec<PartInstance>,
+    /// **所有生物**的解剖关节。`JointInstance::creature` 标归属。
     pub joints: Vec<JointInstance>,
-    /// 所有物理块。切开一次就多一块。
-    pub pieces: Vec<Piece>,
-    /// 每个 `PartId` 的代表块（下标按 `PartId`）。`part_polygon` 之类读它。
+    /// **所有生物**的物理块。切开一次就多一块。
     ///
-    /// 代表块 = 切完之后包含**原部件质心**的那一块。选它是因为那是玩家
-    /// 心理上"这条腿还在原地"的那一半。
-    pub primary: Vec<PieceId>,
+    /// 全局一张表而不是每具一份：两具身体的碎块要互相碰撞，一把刀要能同时
+    /// 切到两具。`PieceId` 全局唯一，所以切割 / 冻结 / 删除 / 拾取 / 渲染
+    /// 都不用知道"生物"这个概念。
+    pub pieces: Vec<Piece>,
+}
+
+impl BodyInstance {
+    /// 空世界（还没装生物）。
+    pub fn empty() -> Self {
+        Self {
+            joints: Vec::new(),
+            pieces: Vec::new(),
+        }
+    }
 }
 
 pub struct Sim {
@@ -291,16 +310,13 @@ pub struct Sim {
     pub damage: JointParams,
     /// 累计发生过的状态迁移，按发生顺序。HUD / 日志 / 验收图都读它。
     pub injuries: Vec<(JointId, JointState, f32)>,
-    /// 组织场。`None` 表示这具身体没挂场（纯 ragdoll，不会出血也不会缺氧）。
-    pub tissue: Option<TissueSim>,
-    /// 0D 生理。
-    pub physio: Physio,
-    /// 环境温度（°C）。写进组织场的边界条件，是"冷"这件事的唯一入口。
-    pub ambient_c: f32,
-    /// 组织场的**基准**代谢产热（K/s）。实际产热 = 这个值 × `physio.bus.metab_scale`。
-    pub(crate) tissue_metab_base: f32,
-    /// 姿态控制（M5）。`None` 表示这具身体是全软的 ragdoll。
-    pub posture: Option<Posture>,
+    /// **所有生物**。每具带自己的生理、组织场、姿态目标。
+    ///
+    /// 块和关节**不在这里**——它们挂在 `body` 上，用 `Piece::creature` /
+    /// `JointInstance::creature` 标归属。理由见 `creature.rs` 的模块注释。
+    pub creatures: Vec<Creature>,
+    /// 当前操作的那一具（切割、喂食、检视、相机都跟着它）。
+    pub active: usize,
     /// 碎片预算与冻结（M6）。
     pub fracture: FractureConfig,
     /// 累计切了几刀。验收标准 8 的"连续断裂 100 次"按它计数。
@@ -360,6 +376,9 @@ impl Posture {
     /// 和 `holding` 的区别：`holding` 是"保持现在这个样子"（可能是躺着的），
     /// 这个是"站直"。刚生成的时候必须用这个——用 `holding` 的话，
     /// 装配姿态下沉 9cm 之后再取目标，人就定在了一个含胸驼背的姿势上。
+    ///
+    /// `targets` 按**全局关节下标**索引（不是每具一份）。多具生物时用不到的
+    /// 那些位置一直是 0，无害——`apply_posture` 只碰自己那具的关节。
     pub fn standing(sim: &Sim) -> Self {
         Self {
             targets: vec![0.0; sim.body.joints.len()],
@@ -399,9 +418,26 @@ impl Sim {
     }
 
     /// 最底层那个：世界尺寸、地面高度、损伤参数全都显式给。
+    ///
+    /// 只建**世界**（地面 + 四面墙），然后 `add_creature` 装上第一具。
+    /// 第二具以后直接调 `add_creature`，走的是同一条路。
     pub fn spawn_in_world(
         plan: BodyPlan,
         origin: Vec2,
+        ground_y: f32,
+        damage: JointParams,
+        world: WorldBounds,
+    ) -> Self {
+        let mut sim = Self::spawn_empty(plan, ground_y, damage, world);
+        sim.add_creature(origin);
+        sim
+    }
+
+    /// 只建世界（地面 + 四面墙），**不装任何生物**。
+    ///
+    /// 读档用：存档里已经有完整的块/关节/生物列表，不需要先装一具再拆掉。
+    pub fn spawn_empty(
+        plan: BodyPlan,
         ground_y: f32,
         damage: JointParams,
         world: WorldBounds,
@@ -433,10 +469,44 @@ impl Sim {
                 .build(),
         );
 
-        let mut parts = Vec::with_capacity(plan.parts.len());
-        let mut handles: Vec<RigidBodyHandle> = Vec::with_capacity(plan.parts.len());
+        Self {
+            physics,
+            plan,
+            body: BodyInstance::empty(),
+            creatures: Vec::new(),
+            active: 0,
+            tick: Tick(0),
+            ground,
+            ground_y,
+            world,
+            catalog: ItemCatalog::asset(),
+            cut_limit: 12,
+            cuts_this_frame: 0,
+            grab_state: None,
+            conns: Vec::new(),
+            damage,
+            injuries: Vec::new(),
+            fracture: FractureConfig::default(),
+            slices: 0,
+            rewind: Rewind::default_5s(),
+        }
+    }
 
-        for part in &plan.parts {
+    /// 往世界里再装一具身体，返回它的下标（同时设为 `active`）。
+    ///
+    /// 这是多 ragdoll 的**唯一入口**：块、关节、部件句柄、生理、组织场、
+    /// 姿态控制器全在这里一次性建好。`spawn_in_world` 也走它，
+    /// 所以"第一具"和"第十具"没有两套代码。
+    pub fn add_creature(&mut self, origin: Vec2) -> usize {
+        let index = self.creatures.len() as u16;
+        let mut parts = Vec::with_capacity(self.plan.parts.len());
+        let mut handles: Vec<RigidBodyHandle> = Vec::with_capacity(self.plan.parts.len());
+        let mut primary = Vec::with_capacity(self.plan.parts.len());
+
+        // 块号 = 追加到**全局**块表里的下标。先算出来，关节要用它。
+        let base = self.body.pieces.len() as u32;
+
+        for part in &self.plan.parts {
             let center = origin + part.offset * CM;
 
             let rb = RigidBodyBuilder::dynamic()
@@ -444,7 +514,7 @@ impl Sim {
                 .linear_damping(0.15)
                 .angular_damping(0.5)
                 .build();
-            let handle = physics.bodies.insert(rb);
+            let handle = self.physics.bodies.insert(rb);
 
             let pts: Vec<RVec2> = part
                 .polygon
@@ -460,10 +530,11 @@ impl Sim {
                 .restitution(0.02)
                 .build();
 
-            let collider =
-                physics
-                    .colliders
-                    .insert_with_parent(collider, handle, &mut physics.bodies);
+            let collider = self.physics.colliders.insert_with_parent(
+                collider,
+                handle,
+                &mut self.physics.bodies,
+            );
 
             handles.push(handle);
             parts.push(PartInstance {
@@ -473,12 +544,11 @@ impl Sim {
             });
         }
 
-        let mut joints = Vec::with_capacity(plan.joints.len());
-        for j in &plan.joints {
+        // 关节
+        for j in &self.plan.joints {
             let a = handles[j.a.index()];
             let b = handles[j.b.index()];
-            let anchor_a = j.anchor_a;
-            let anchor_b = j.anchor_b;
+            let (anchor_a, anchor_b) = (j.anchor_a, j.anchor_b);
 
             let joint = RevoluteJointBuilder::new()
                 .local_anchor1(rv(anchor_a * CM))
@@ -489,20 +559,20 @@ impl Sim {
                 .contacts_enabled(false)
                 .build();
 
-            let handle = physics.impulse_joints.insert(a, b, joint, true);
+            let handle = self.physics.impulse_joints.insert(a, b, joint, true);
             let (wa, wb) = {
-                let pa = physics.bodies[a]
+                let pa = self.physics.bodies[a]
                     .position()
                     .transform_point(rv(anchor_a * CM));
-                let pb = physics.bodies[b]
+                let pb = self.physics.bodies[b]
                     .position()
                     .transform_point(rv(anchor_b * CM));
                 (pa, pb)
             };
-            joints.push(JointInstance {
+            self.body.joints.push(JointInstance {
                 id: j.id,
-                a: PieceId(j.a.0 as u32),
-                b: PieceId(j.b.0 as u32),
+                a: PieceId(base + j.a.0 as u32),
+                b: PieceId(base + j.b.0 as u32),
                 handle,
                 anchor_a,
                 anchor_b,
@@ -511,57 +581,74 @@ impl Sim {
                 tether: None,
                 tether_rest: (wa - wb).length().max(1e-4),
                 cuttable: true,
+                creature: index,
             });
         }
 
-        // 开局：一个部件 = 一块
-        let pieces: Vec<Piece> = plan
-            .parts
-            .iter()
-            .map(|p| Piece {
-                part: p.id,
-                body: handles[p.id.index()],
-                collider: parts[p.id.index()].collider,
-                polygon: p.polygon.clone(),
+        // 块：一个部件 = 一块
+        for (i, part) in self.plan.parts.iter().enumerate() {
+            self.body.pieces.push(Piece {
+                part: part.id,
+                body: handles[i],
+                collider: parts[i].collider,
+                polygon: part.polygon.clone(),
                 centroid: Vec2::ZERO,
-                mass: p.mass,
+                mass: part.mass,
                 still_s: 0.0,
                 frozen_pose: None,
                 item: None,
                 heat: None,
+                creature: index,
                 deleted: false,
-            })
-            .collect();
-        let primary = (0..plan.parts.len()).map(|i| PieceId(i as u32)).collect();
+            });
+            primary.push(PieceId(base + i as u32));
+        }
 
-        Self {
-            physics,
-            plan,
-            body: BodyInstance {
-                parts,
-                joints,
-                pieces,
-                primary,
-            },
-            tick: Tick(0),
-            ground,
-            ground_y,
-            world,
-            catalog: ItemCatalog::asset(),
-            cut_limit: 12,
-            cuts_this_frame: 0,
-            grab_state: None,
-            conns: Vec::new(),
-            damage,
-            injuries: Vec::new(),
-            tissue: None,
-            physio: Physio::asset(),
-            ambient_c: 22.0,
-            tissue_metab_base: 0.0,
-            posture: None,
-            fracture: FractureConfig::default(),
-            slices: 0,
-            rewind: Rewind::default_5s(),
+        let mut c = Creature::empty(format!("人偶 {}", self.creatures.len() + 1));
+        c.parts = parts;
+        c.primary = primary;
+        self.creatures.push(c);
+        self.active = self.creatures.len() - 1;
+        self.active
+    }
+
+    /// 这具生物还剩几块（没删的）。
+    pub fn creature_pieces(&self, c: usize) -> usize {
+        self.body
+            .pieces
+            .iter()
+            .filter(|p| p.creature as usize == c && !p.deleted)
+            .count()
+    }
+
+    /// 这具生物还有活块吗。
+    pub fn creature_alive(&self, c: usize) -> bool {
+        self.creature_pieces(c) > 0
+    }
+
+    /// 还有几具活着的生物。
+    pub fn living_creatures(&self) -> usize {
+        (0..self.creatures.len())
+            .filter(|&c| self.creature_alive(c))
+            .count()
+    }
+
+    /// 这块属于哪一具生物（道具返回 `None`）。
+    pub fn creature_of(&self, id: PieceId) -> Option<usize> {
+        let p = &self.body.pieces[id.index()];
+        if p.item.is_some() || p.part == PartId::NONE {
+            return None;
+        }
+        Some(p.creature as usize)
+    }
+
+    /// 换一个操作对象。下标越界返回 false。
+    pub fn set_active(&mut self, c: usize) -> bool {
+        if c < self.creatures.len() {
+            self.active = c;
+            true
+        } else {
+            false
         }
     }
 
@@ -573,7 +660,7 @@ impl Sim {
             .iter()
             .position(|p| p.name == "torso")
             .expect("human_01 一定有 torso");
-        let rb = &mut self.physics.bodies[self.body.parts[torso].body];
+        let rb = &mut self.physics.bodies[self.creatures[self.active].parts[torso].body];
         rb.set_linvel(RVec2::new(v.x, v.y), true);
     }
 
@@ -582,7 +669,7 @@ impl Sim {
         let Some(p) = self.plan.parts.iter().position(|p| p.name == part) else {
             return;
         };
-        let rb = &mut self.physics.bodies[self.body.parts[p].body];
+        let rb = &mut self.physics.bodies[self.creatures[self.active].parts[p].body];
         rb.set_linvel(RVec2::new(v.x, v.y), true);
     }
 
@@ -595,7 +682,7 @@ impl Sim {
         let Some(p) = self.plan.parts.iter().position(|p| p.name == part) else {
             return;
         };
-        let rb = &mut self.physics.bodies[self.body.parts[p].body];
+        let rb = &mut self.physics.bodies[self.creatures[self.active].parts[p].body];
         rb.set_body_type(
             if fixed {
                 RigidBodyType::Fixed
@@ -634,20 +721,20 @@ impl Sim {
     /// 8 个 texel，第一秒的灌注和出血都是错的。
     pub fn attach_tissue(&mut self, cfg: &TissueConfig) {
         let mut sim = build_tissue(&self.plan, cfg);
-        sim.warmup(self.physio.bus.map);
-        self.tissue_metab_base = sim.cfg.metab_heat;
-        self.ambient_c = sim.cfg.ambient_c;
-        self.tissue = Some(sim);
+        sim.warmup(self.creatures[self.active].physio.bus.map);
+        self.creatures[self.active].tissue_metab_base = sim.cfg.metab_heat;
+        self.creatures[self.active].ambient_c = sim.cfg.ambient_c;
+        self.creatures[self.active].tissue = Some(sim);
     }
 
     /// 改环境温度。这是"冷"的唯一入口——玩家靠近温箱、走进冷库，都调这里。
     pub fn set_ambient(&mut self, c: f32) {
-        self.ambient_c = c;
+        self.creatures[self.active].ambient_c = c;
     }
 
     /// 吃一顿（kcal）。食物在 P0 里没有咀嚼和吞咽，判定"进了嘴"之后直接调这里。
     pub fn feed(&mut self, kcal: f32) -> f32 {
-        self.physio.feed(kcal)
+        self.creatures[self.active].physio.feed(kcal)
     }
 
     /// 用冲量打某个部件。
@@ -662,7 +749,7 @@ impl Sim {
         let Some(p) = self.plan.parts.iter().position(|p| p.name == part) else {
             return false;
         };
-        let handle = self.body.parts[p].body;
+        let handle = self.creatures[self.active].parts[p].body;
         let rb = &mut self.physics.bodies[handle];
         // 局部 → 世界：偏移和冲量都要跟着刚体转
         let at = rb
@@ -693,12 +780,12 @@ impl Sim {
 
     /// 打开姿态控制，目标取当前姿态（"保持住"）。
     pub fn enable_posture(&mut self) {
-        self.posture = Some(Posture::holding(self));
+        self.creatures[self.active].posture = Some(Posture::holding(self));
     }
 
     /// 站起来：目标 = 装配姿态 + 平衡辅助。
     pub fn stand(&mut self) {
-        self.posture = Some(Posture::standing(self));
+        self.creatures[self.active].posture = Some(Posture::standing(self));
     }
 
     /// 重新取目标角 = 现在这个样子。落地稳定之后调一次，
@@ -706,7 +793,7 @@ impl Sim {
     pub fn retarget_posture(&mut self) {
         let n = self.body.joints.len();
         let angles: Vec<f32> = (0..n).map(|i| self.joint_load(i).angle).collect();
-        if let Some(p) = self.posture.as_mut() {
+        if let Some(p) = self.creatures[self.active].posture.as_mut() {
             for (t, a) in p.targets.iter_mut().zip(angles) {
                 *t = a;
             }
@@ -719,7 +806,7 @@ impl Sim {
     /// 不再更新它，电机还在按上一次的刚度出力。不关的话"关掉姿态控制"
     /// 等于没关——M5 的锤击测试就是这么暴露出来的：锤了五下关节纹丝不动。
     pub fn disable_posture(&mut self) {
-        self.posture = None;
+        self.creatures[self.active].posture = None;
         self.clear_joint_motors();
     }
 
@@ -739,7 +826,7 @@ impl Sim {
         let Some(i) = self.joint_index(joint) else {
             return false;
         };
-        if let Some(p) = self.posture.as_mut() {
+        if let Some(p) = self.creatures[self.active].posture.as_mut() {
             p.targets[i] = angle;
             true
         } else {
@@ -752,7 +839,12 @@ impl Sim {
     /// 这是设计文档 9.3 里那条"只允许写三个东西"的第一条。昏迷 → 0，
     /// 所以人会软下去；关节疼 → 该关节的保护系数掉下来，所以会护着。
     pub fn muscle_tone(&self) -> f32 {
-        let b = &self.physio.bus;
+        self.muscle_tone_of(self.active)
+    }
+
+    /// 某一具的肌张力。**每具各算各的**——一具昏迷不该让另一具也软下去。
+    pub fn muscle_tone_of(&self, c: usize) -> f32 {
+        let b = &self.creatures[c].physio.bus;
         b.consciousness * (0.3 + 0.7 * b.sympathetic_tone)
     }
 
@@ -776,13 +868,22 @@ impl Sim {
     /// 2. 力有上限（体重的 40%）。所以用力推还是会倒，只是不会一碰就倒。
     /// 3. 只修水平方向。垂直方向交给物理。
     fn apply_balance(&mut self) {
-        let Some(p) = &self.posture else { return };
+        // **每具各算各的**：各自看自己的质心落在自己两只脚之间没有。
+        for ci in 0..self.creatures.len() {
+            self.balance_one(ci);
+        }
+    }
+
+    fn balance_one(&mut self, ci: usize) {
+        let Some(p) = &self.creatures[ci].posture else {
+            return;
+        };
         if p.balance <= 0.0 {
             return;
         }
         let strength = p.balance;
 
-        // 质心 + 支撑点
+        // 质心 + 支撑点（只看这一具的块）
         let mut com = Vec2::ZERO;
         let mut total_m = 0.0f32;
         let mut feet_x = 0.0f32;
@@ -790,7 +891,7 @@ impl Sim {
         let mut lowest = f32::INFINITY;
         for i in 0..self.body.pieces.len() {
             let piece = &self.body.pieces[i];
-            if piece.deleted {
+            if piece.deleted || piece.creature as usize != ci {
                 continue;
             }
             let (pos, _) = self.piece_pose(PieceId(i as u32));
@@ -804,10 +905,10 @@ impl Sim {
         }
         com /= total_m;
 
-        // 支撑点 = 最低的那两块（两只脚）的水平中点
+        // 支撑点 = 最低的那几块（两只脚）的水平中点
         for i in 0..self.body.pieces.len() {
             let piece = &self.body.pieces[i];
-            if piece.deleted {
+            if piece.deleted || piece.creature as usize != ci {
                 continue;
             }
             let (pos, _) = self.piece_pose(PieceId(i as u32));
@@ -827,8 +928,11 @@ impl Sim {
         }
 
         // 质心速度（用骨盆近似就够——这一项只是阻尼）
-        let pelvis = self.body.primary.first().copied();
+        let pelvis = self.creatures[ci].primary.first().copied();
         let Some(pelvis) = pelvis else { return };
+        if self.body.pieces[pelvis.index()].deleted {
+            return;
+        }
         let vx = self.piece_velocity(pelvis).x;
 
         let err = com.x - support;
@@ -837,11 +941,8 @@ impl Sim {
         let max_f = total_m * 9.8 * 0.4;
         f = f.clamp(-max_f, max_f);
 
-        let Some(rb) = self
-            .physics
-            .bodies
-            .get_mut(self.body.pieces[pelvis.index()].body)
-        else {
+        let handle = self.body.pieces[pelvis.index()].body;
+        let Some(rb) = self.physics.bodies.get_mut(handle) else {
             return;
         };
         rb.add_force(rv(Vec2::new(f, 0.0)), true);
@@ -870,21 +971,25 @@ impl Sim {
     /// `muscle_tone` 依然乘在刚度上——昏迷 → 0 就是"电机断电"，人会软下去；
     /// 关节疼 → `guard` 把那条关节的刚度压到 15%，就是"护着不敢用力"。
     fn apply_posture(&mut self) {
-        let Some(p) = &self.posture else { return };
-        let tone = self.muscle_tone();
-        let k_scale = p.stiffness * tone;
-        let d_scale = p.damping * (0.4 + 0.6 * tone);
-
+        // **每具各用自己的姿态目标**：按关节的 `creature` 标签去查。
         for i in 0..self.body.joints.len() {
             let j = &self.body.joints[i];
             // 脱位 / 离断的关节没有硬约束了（`handle` 失效），这一帧不发力
             let Some(spec) = self.plan.joints.get(j.id.index()) else {
                 continue;
             };
+            // 这条关节属于哪一具 → 用哪一具的肌张力和姿态目标
+            let ci = j.creature as usize;
+            let Some(p) = self.creatures.get(ci).and_then(|c| c.posture.as_ref()) else {
+                continue;
+            };
+            let tone = self.muscle_tone_of(ci);
+            let k_scale = p.stiffness * tone;
+            let d_scale = p.damping * (0.4 + 0.6 * tone);
             let guard = 1.0 - 0.85 * j.health.pain;
             let k = spec.stiffness * k_scale * guard;
             let d = spec.damping * d_scale * guard;
-            let target = p.targets[i];
+            let target = p.targets.get(i).copied().unwrap_or(0.0);
             let handle = j.handle;
 
             let Some(joint) = self.physics.impulse_joints.get_mut(handle, true) else {
@@ -909,8 +1014,34 @@ impl Sim {
     /// 和 [`Sim::slice`] 用同一套坐标——交互层只该认识一个坐标系。
     /// 返回 `None` 表示这具身体没挂组织场——那样切割只是几何操作，不出血。
     pub fn cut(&mut self, cut: &anatomize_cut::CutSegment) -> Option<SeverOutcome> {
-        let body_cut = self.cut_to_body(cut)?;
-        self.cut_body_local(&body_cut)
+        // **对每一具有组织场的身体各切一刀。**
+        //
+        // 一个世界只有一把刀：刀扫过谁就切谁。每具的身体坐标系不同，
+        // 所以要各自转一次坐标——拿 active 的转完套到别人身上，刀会切到空气里。
+        //
+        // `apply_cut` 只在刀线真的穿过组织的地方留下创口，所以"全都切一遍"
+        // 不会误伤：没被扫到的那具，场里一个 texel 都不会变。
+        let mut best: Option<SeverOutcome> = None;
+        for ci in 0..self.creatures.len() {
+            if self.creatures[ci].tissue.is_none() {
+                continue;
+            }
+            let Some(body_cut) = self.cut_to_body_of(ci, cut) else {
+                continue;
+            };
+            let map = self.creatures[ci].physio.bus.map;
+            let Some(tissue) = self.creatures[ci].tissue.as_mut() else {
+                continue;
+            };
+            let out = apply_cut(&self.plan, &mut tissue.field, &body_cut);
+            tissue.warmup(map);
+            // 留"伤得最重"那一具的结果给 UI 报
+            let hits = out.report.hits.len();
+            if best.as_ref().is_none_or(|b| hits > b.report.hits.len()) {
+                best = Some(out);
+            }
+        }
+        best
     }
 
     /// 切一刀，刀线在**身体局部厘米**。
@@ -918,8 +1049,8 @@ impl Sim {
     /// 结构判定（血管折线）和组织场都在身体局部坐标里，所以这是真正干活的那个。
     /// 返回 `None` 表示这具身体没挂组织场。
     pub fn cut_body_local(&mut self, cut: &anatomize_cut::CutSegment) -> Option<SeverOutcome> {
-        let map = self.physio.bus.map;
-        let tissue = self.tissue.as_mut()?;
+        let map = self.creatures[self.active].physio.bus.map;
+        let tissue = self.creatures[self.active].tissue.as_mut()?;
         let out = apply_cut(&self.plan, &mut tissue.field, cut);
         tissue.warmup(map);
         Some(out)
@@ -927,8 +1058,8 @@ impl Sim {
 
     /// 按压 / 松开创口。返回按压后的出血速率（mL/s）。
     pub fn press_wound(&mut self, on: bool) -> f32 {
-        let map = self.physio.bus.map;
-        match self.tissue.as_mut() {
+        let map = self.creatures[self.active].physio.bus.map;
+        match self.creatures[self.active].tissue.as_mut() {
             Some(t) => t.set_wound_clamped(on, map),
             None => 0.0,
         }
@@ -936,7 +1067,20 @@ impl Sim {
 
     /// 当前创口出血速率（mL/s）。没有组织场时为 0。
     pub fn hemorrhage_ml_s(&self) -> f32 {
-        self.tissue.as_ref().map_or(0.0, |t| t.step.wound_flux)
+        // **所有生物加起来**：两具都在流血时，屏幕上该看到总和。
+        self.creatures
+            .iter()
+            .filter_map(|c| c.tissue.as_ref())
+            .map(|t| t.step.wound_flux)
+            .sum()
+    }
+
+    /// 某一具的出血速率。
+    pub fn hemorrhage_of(&self, c: usize) -> f32 {
+        self.creatures
+            .get(c)
+            .and_then(|c| c.tissue.as_ref())
+            .map_or(0.0, |t| t.step.wound_flux)
     }
 
     /// 一个物理 tick 的 L2 → L4 → L2 闭环。
@@ -953,23 +1097,36 @@ impl Sim {
     /// 所以不会振铃。**反过来写（先算生理再解场）会引入两个 tick 的延迟，
     /// 在失血后期表现为 MAP 和出血速率互相追着抖。**
     fn step_physio(&mut self) {
-        let mut input = PhysioInput::none();
-        if let Some(t) = self.tissue.as_mut() {
-            if self.tick.tissue_due() {
-                // 三条 L4 → L2 的写回。**体温闭环全靠这三行**：
-                // 环境温度是边界，代谢产热是寒战的执行器，血温是深部温度的载体。
-                // 少写任何一条，"冷"就变成了一具不会回温也不会失温的模型。
-                t.cfg.ambient_c = self.ambient_c;
-                t.cfg.metab_heat = self.tissue_metab_base * self.physio.bus.metab_scale;
-                t.cfg.blood_c = self.physio.bus.temp_core;
-                t.maybe_step(self.physio.bus.map, dt_of(TISSUE_HZ));
+        let tick = self.tick;
+        let due = tick.tissue_due();
+        // **每具生物各跑一遍**。它们共享同一个 tick，但生理和组织场是各自的。
+        for ci in 0..self.creatures.len() {
+            let mut input = PhysioInput::none();
+            // 先把要用的标量抄出来：`tissue.as_mut()` 会独占借 `self.creatures`，
+            // 之后再读同一具的 `physio` 就借不到了。
+            let ambient = self.creatures[ci].ambient_c;
+            let metab_scale = self.creatures[ci].physio.bus.metab_scale;
+            let metab_base = self.creatures[ci].tissue_metab_base;
+            let blood_c = self.creatures[ci].physio.bus.temp_core;
+            let map = self.creatures[ci].physio.bus.map;
+
+            if let Some(t) = self.creatures[ci].tissue.as_mut() {
+                if due {
+                    // 三条 L4 → L2 的写回。**体温闭环全靠这三行**：
+                    // 环境温度是边界，代谢产热是寒战的执行器，血温是深部温度的载体。
+                    // 少写任何一条，"冷"就变成了一具不会回温也不会失温的模型。
+                    t.cfg.ambient_c = ambient;
+                    t.cfg.metab_heat = metab_base * metab_scale;
+                    t.cfg.blood_c = blood_c;
+                    t.maybe_step(map, dt_of(TISSUE_HZ));
+                }
+                input.hemorrhage_ml_s = t.step.wound_flux;
+                input.tissue_o2 = Some(t.step.mean_o2);
+                input.skin_temp = Some(t.step.skin_temp);
+                input.ambient_c = ambient;
             }
-            input.hemorrhage_ml_s = t.step.wound_flux;
-            input.tissue_o2 = Some(t.step.mean_o2);
-            input.skin_temp = Some(t.step.skin_temp);
-            input.ambient_c = self.ambient_c;
+            self.creatures[ci].physio.step(input, tick);
         }
-        self.physio.step(input, self.tick);
     }
 
     // -----------------------------------------------------------------------
@@ -1177,7 +1334,7 @@ impl Sim {
             .parts
             .iter()
             .position(|p| p.name == "pelvis")
-            .map(|i| self.piece_pose(self.body.primary[i]).1)
+            .map(|i| self.piece_pose(self.creatures[self.active].primary[i]).1)
             .unwrap_or(0.0)
     }
 
@@ -1187,8 +1344,13 @@ impl Sim {
     /// 转成身体局部厘米，都要先知道这个原点。锚在骨盆上——它是最不容易被
     /// 切碎的那块，也是解剖学上的"躯干中心"。
     pub fn body_origin_world(&self) -> Option<Vec2> {
+        self.body_origin_world_of(self.active)
+    }
+
+    /// 指定某一具的身体原点（世界米）。
+    pub fn body_origin_world_of(&self, c: usize) -> Option<Vec2> {
         let i = self.plan.parts.iter().position(|p| p.name == "pelvis")?;
-        let id = self.body.primary[i];
+        let id = *self.creatures.get(c)?.primary.get(i)?;
         let piece = &self.body.pieces[id.index()];
         let (pos, rot) = self.piece_pose(id);
         let w =
@@ -1201,15 +1363,26 @@ impl Sim {
         &self,
         cut: &anatomize_cut::CutSegment,
     ) -> Option<anatomize_cut::CutSegment> {
-        let o = self.body_origin_world()?;
+        self.cut_to_body_of(self.active, cut)
+    }
+
+    /// 同上，指定哪一具。**多 ragdoll 必须按生物各转一次**：
+    /// 每具的身体坐标系原点/朝向都不一样，用 active 的转完再套到别人身上，
+    /// 刀就切到空气里去了。
+    pub fn cut_to_body_of(
+        &self,
+        c: usize,
+        cut: &anatomize_cut::CutSegment,
+    ) -> Option<anatomize_cut::CutSegment> {
+        let o = self.body_origin_world_of(c)?;
         let i = self.plan.parts.iter().position(|p| p.name == "pelvis")?;
-        let (_, rot) = self.piece_pose(self.body.primary[i]);
+        let (_, rot) = self.piece_pose(self.creatures[c].primary[i]);
         Some(cut.to_body_frame(o, rot))
     }
 
     /// 部件在世界坐标下的多边形顶点（米）。
     pub fn part_polygon(&self, part: PartId) -> Vec<Vec2> {
-        let inst = &self.body.parts[part.index()];
+        let inst = &self.creatures[self.active].parts[part.index()];
         let rb = &self.physics.bodies[inst.body];
         let pose = rb.position();
         self.plan.parts[part.index()]
@@ -1226,7 +1399,7 @@ impl Sim {
     pub fn part_angle(&self, part: &str) -> Option<f32> {
         let p = self.plan.parts.iter().position(|p| p.name == part)?;
         Some(
-            self.physics.bodies[self.body.parts[p].body]
+            self.physics.bodies[self.creatures[self.active].parts[p].body]
                 .rotation()
                 .angle(),
         )
@@ -1235,7 +1408,7 @@ impl Sim {
     /// 部件在世界坐标下的质心位置（米）。
     pub fn part_center(&self, part: &str) -> Option<Vec2> {
         let p = self.plan.parts.iter().position(|p| p.name == part)?;
-        let t = self.physics.bodies[self.body.parts[p].body]
+        let t = self.physics.bodies[self.creatures[self.active].parts[p].body]
             .position()
             .translation;
         Some(Vec2::new(t.x, t.y))

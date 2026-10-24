@@ -401,7 +401,7 @@ impl Scenario {
         let total = (self.duration_s() * 60.0) as u32;
         for i in 0..total {
             sim.step();
-            let b = sim.physio.bus;
+            let b = sim.creatures[sim.active].physio.bus;
             let t = i as f32 / 60.0;
             map_min = map_min.min(b.map);
             hr_max = hr_max.max(b.heart_rate);
@@ -418,7 +418,7 @@ impl Scenario {
             hr_max,
             t_map45,
             t_coma,
-            sim.physio.bus.blood_volume,
+            sim.creatures[sim.active].physio.bus.blood_volume,
         ]
     }
 }
@@ -430,10 +430,10 @@ fn cold(physio: PhysioConfig, damage: JointParams, fast: bool) -> Vec<f32> {
     let total = (1800.0 * 60.0) as u32;
     for _ in 0..total {
         sim.step();
-        core_min = core_min.min(sim.physio.bus.temp_core);
+        core_min = core_min.min(sim.creatures[sim.active].physio.bus.temp_core);
     }
-    let b = sim.physio.bus;
-    let skin = sim.tissue.as_ref().map_or(0.0, |t| t.step.skin_temp);
+    let b = sim.creatures[sim.active].physio.bus;
+    let skin = sim.creatures[sim.active].tissue.as_ref().map_or(0.0, |t| t.step.skin_temp);
     vec![
         b.temp_core,
         core_min,
@@ -446,7 +446,7 @@ fn cold(physio: PhysioConfig, damage: JointParams, fast: bool) -> Vec<f32> {
 
 fn feed(physio: PhysioConfig, damage: JointParams, fast: bool) -> Vec<f32> {
     let mut sim = world(physio, damage, fast);
-    let base = sim.physio.bus.glucose;
+    let base = sim.creatures[sim.active].physio.bus.glucose;
     sim.feed(500.0);
     let mut peak = base;
     let mut ins_peak = 0.0f32;
@@ -454,7 +454,7 @@ fn feed(physio: PhysioConfig, damage: JointParams, fast: bool) -> Vec<f32> {
     let total = (7200.0 * 60.0) as u32;
     for i in 0..total {
         sim.step();
-        let b = sim.physio.bus;
+        let b = sim.creatures[sim.active].physio.bus;
         peak = peak.max(b.glucose);
         ins_peak = ins_peak.max(b.insulin);
         let s = i as f32 / 60.0;
@@ -475,7 +475,7 @@ fn hammer(physio: PhysioConfig, damage: JointParams) -> Vec<f32> {
     for _ in 0..240 {
         sim.step();
     }
-    let targets = sim.posture.as_ref().unwrap().targets.clone();
+    let targets = sim.creatures[sim.active].posture.as_ref().unwrap().targets.clone();
     let knee_target = targets[knee];
 
     // 锤击时必须关掉姿态控制：带着主动力矩，关节过不了伸，也就打不伤
@@ -483,7 +483,7 @@ fn hammer(physio: PhysioConfig, damage: JointParams) -> Vec<f32> {
     for _ in 0..5 {
         // 打小腿中段，方向朝过伸
         let (pos, _) = sim.piece_pose(
-            sim.body.primary[sim
+            sim.creatures[sim.active].primary[sim
                 .plan
                 .parts
                 .iter()
@@ -497,7 +497,7 @@ fn hammer(physio: PhysioConfig, damage: JointParams) -> Vec<f32> {
         }
     }
     sim.enable_posture();
-    sim.posture.as_mut().unwrap().targets = targets;
+    sim.creatures[sim.active].posture.as_mut().unwrap().targets = targets;
     for _ in 0..240 {
         sim.step();
     }
@@ -515,7 +515,7 @@ fn hammer(physio: PhysioConfig, damage: JointParams) -> Vec<f32> {
 fn world(physio: PhysioConfig, damage: JointParams, fast: bool) -> Sim {
     let plan = BodyPlan::from_ron(ASSET_HUMAN_01).unwrap();
     let mut sim = Sim::spawn_with(plan, Vec2::new(0.0, 40.0), GROUND, damage);
-    sim.physio = anatomize_physio::Physio::new(physio);
+    sim.creatures[sim.active].physio = anatomize_physio::Physio::new(physio);
     sim.attach_tissue(&TissueConfig::asset());
     sim.set_part_fixed("head", true);
     for _ in 0..180 {
@@ -525,7 +525,7 @@ fn world(physio: PhysioConfig, damage: JointParams, fast: bool) -> Sim {
         // 1Hz 解场：出血速率的变化是秒级的，20Hz 是浪费。
         // 不能完全冻结——那样"血压降 → 出血变慢"的负反馈会消失，
         // 扫描会得到一条线性下降的 MAP，和真实轨迹差 20 秒。
-        if let Some(t) = sim.tissue.as_mut() {
+        if let Some(t) = sim.creatures[sim.active].tissue.as_mut() {
             t.stride = 20;
         }
     }

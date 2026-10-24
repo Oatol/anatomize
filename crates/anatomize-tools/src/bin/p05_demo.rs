@@ -46,7 +46,7 @@ fn main() {
 
     // ------------------------------------------------------------ 上排三帧
     let mut sim = world();
-    let vol_before = sim.physio.bus.blood_volume;
+    let vol_before = sim.creatures[sim.active].physio.bus.blood_volume;
     let pieces_before = sim.body.pieces.len();
 
     // 帧 1：切之前
@@ -66,14 +66,14 @@ fn main() {
         sim.step();
     }
     let bleed_after = sim.hemorrhage_ml_s();
-    let vol_after = sim.physio.bus.blood_volume;
+    let vol_after = sim.creatures[sim.active].physio.bus.blood_volume;
     let pieces_after = sim.body.pieces.len();
     let frame2 = shot(&sim, 1.55);
 
     // 回滚 4 秒
     let back = sim.rewind(4.0).expect("缓冲里应该有 4 秒前的帧");
     let bleed_back = sim.hemorrhage_ml_s();
-    let vol_back = sim.physio.bus.blood_volume;
+    let vol_back = sim.creatures[sim.active].physio.bus.blood_volume;
     let pieces_back = sim.body.pieces.len();
     let frame3 = shot(&sim, 1.55);
 
@@ -370,7 +370,7 @@ fn shot(sim: &Sim, world_width: f32) -> Canvas {
 
 fn cut(sim: &mut Sim, part: &str, dy: f32) {
     let i = sim.plan.parts.iter().position(|p| p.name == part).unwrap();
-    let (pos, _) = sim.piece_pose(sim.body.primary[i]);
+    let (pos, _) = sim.piece_pose(sim.creatures[sim.active].primary[i]);
     let at = pos + Vec2::new(0.0, dy);
     let seg = CutSegment {
         a: at - Vec2::new(0.07, 0.0),
@@ -410,13 +410,13 @@ fn scan() -> (Vec<f32>, Vec<f32>, Vec<f32>) {
 
             let plan = BodyPlan::from_ron(ASSET_HUMAN_01).unwrap();
             let mut sim = Sim::spawn(plan, Vec2::new(0.0, 40.0), GROUND);
-            sim.physio = anatomize_physio::Physio::new(physio);
+            sim.creatures[sim.active].physio = anatomize_physio::Physio::new(physio);
             sim.attach_tissue(&TissueConfig::asset());
             sim.set_part_fixed("head", true);
             for _ in 0..180 {
                 sim.step();
             }
-            if let Some(t) = sim.tissue.as_mut() {
+            if let Some(t) = sim.creatures[sim.active].tissue.as_mut() {
                 t.stride = 20;
             }
             // 股动脉横断
@@ -426,7 +426,7 @@ fn scan() -> (Vec<f32>, Vec<f32>, Vec<f32>) {
                 .iter()
                 .position(|p| p.name == "thigh_l")
                 .unwrap();
-            let (pos, _) = sim.piece_pose(sim.body.primary[i]);
+            let (pos, _) = sim.piece_pose(sim.creatures[sim.active].primary[i]);
             let seg = CutSegment {
                 a: pos - Vec2::new(0.06, 0.0),
                 b: pos + Vec2::new(0.06, 0.0),
@@ -438,7 +438,7 @@ fn scan() -> (Vec<f32>, Vec<f32>, Vec<f32>) {
             let mut t45 = 300.0f32;
             for k in 0..(300 * 60) {
                 sim.step();
-                if sim.physio.bus.map < 45.0 {
+                if sim.creatures[sim.active].physio.bus.map < 45.0 {
                     t45 = k as f32 / 60.0;
                     break;
                 }

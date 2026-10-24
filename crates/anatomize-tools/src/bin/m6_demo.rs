@@ -221,7 +221,7 @@ fn main() {
         TEXT,
     );
 
-    let bus = b.physio.bus;
+    let bus = b.creatures[b.active].physio.bus;
     let rows: [(String, f32, f32, &str, [u8; 4]); 7] = [
         ("MAP".into(), bus.map, 130.0, "mmHg", [120, 220, 240, 255]),
         (
@@ -419,7 +419,7 @@ fn frame(cv: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
 /// 在某个部件当前的腰部横切一刀，返回切口的世界位置。
 fn cut_part(sim: &mut Sim, name: &str, dy: f32) -> Vec2 {
     let i = sim.plan.parts.iter().position(|p| p.name == name).unwrap();
-    let (pos, _) = sim.piece_pose(sim.body.primary[i]);
+    let (pos, _) = sim.piece_pose(sim.creatures[sim.active].primary[i]);
     let at = pos + Vec2::new(0.0, dy);
     let seg = CutSegment {
         a: at - Vec2::new(0.08, 0.0),

@@ -105,7 +105,13 @@ impl Sim {
             let p = &self.body.pieces[id.index()];
             (p.part, p.polygon.clone())
         };
-        if let (Some(t), true) = (self.tissue.as_mut(), part != anatomize_core::PartId::NONE) {
+        // 用**这块所属**那具生物的组织场。道具的 `creature` 是 `u16::MAX`
+        // （不属于任何一具），没有场可抹。
+        let cr = self.body.pieces[id.index()].creature as usize;
+        if let (Some(t), true) = (
+            self.creatures.get_mut(cr).and_then(|c| c.tissue.as_mut()),
+            part != anatomize_core::PartId::NONE,
+        ) {
             let offset = self.plan.parts[part.index()].offset;
             let body_poly: Vec<Vec2> = poly.iter().map(|v| *v + offset).collect();
             anatomize_tissue::clear_region(&mut t.field, &[body_poly]);

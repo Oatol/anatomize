@@ -80,7 +80,7 @@ fn run(sim: &mut Sim, seconds: f32, every: f32, press_at: Option<f32>) -> Trace 
             pressed = true;
         }
         if i % stride == 0 {
-            let b = sim.physio.bus;
+            let b = sim.creatures[sim.active].physio.bus;
             points.push((
                 t,
                 b.map,
@@ -153,7 +153,7 @@ fn compressing_the_wound_stops_the_bleeding_and_the_pressure() {
     // 先流 15 秒，让它真的开始掉血压
     let before = run(&mut sim, 15.0, 5.0, None);
     print_trace("按压前 15s", &before);
-    let map_before = sim.physio.bus.map;
+    let map_before = sim.creatures[sim.active].physio.bus.map;
 
     let q_pressed = sim.press_wound(true);
     println!("按压 → 出血 {q_pressed:.3} mL/s");
@@ -162,7 +162,7 @@ fn compressing_the_wound_stops_the_bleeding_and_the_pressure() {
     let after = run(&mut sim, 30.0, 5.0, None);
     print_trace("按压后 30s", &after);
 
-    let map_after = sim.physio.bus.map;
+    let map_after = sim.creatures[sim.active].physio.bus.map;
     println!("MAP：按压时 {map_before:.1} → 30s 后 {map_after:.1}");
     // 按压之后 MAP 不再往下掉（允许 1 mmHg 的数值抖动）
     assert!(
@@ -199,7 +199,7 @@ fn femoral_bleed_is_slow_but_fatal() {
     let tr = run(&mut sim, 60.0, 10.0, None);
     print_trace("股动脉离断 60s", &tr);
 
-    let b = sim.physio.bus;
+    let b = sim.creatures[sim.active].physio.bus;
     println!(
         "60s 后：失血 {:.0} mL（{:.1}%），MAP {:.1}，HR {:.0}",
         b.blood_lost_ml,
@@ -222,7 +222,7 @@ fn the_wound_does_not_create_blood_from_nothing() {
     settle(&mut sim, 2.0);
 
     sim.cut_body_local(&thigh_cut()).expect("挂了组织场");
-    let t = sim.tissue.as_ref().unwrap();
+    let t = sim.creatures[sim.active].tissue.as_ref().unwrap();
     let s = t.step;
     println!(
         "动脉流入 {:.3} = 静脉回流 {:.3} + 创口 {:.3}（残差 {:.3e}）",
@@ -258,5 +258,5 @@ fn a_cut_that_misses_every_vessel_does_not_bleed_much() {
 
     let tr = run(&mut sim, 20.0, 10.0, None);
     print_trace("浅划 20s", &tr);
-    assert!(sim.physio.bus.map > 90.0, "浅划不该影响血压");
+    assert!(sim.creatures[sim.active].physio.bus.map > 90.0, "浅划不该影响血压");
 }

@@ -40,6 +40,7 @@ pub fn window(ctx: &egui::Context, app: &mut App) {
                 .inner_margin(egui::Margin::same(10)),
         )
         .show(ctx, |ui| {
+            creature_tabs(ui, app);
             headline(ui, app);
             ui.separator();
             body_map(ui, app);
@@ -53,9 +54,42 @@ pub fn window(ctx: &egui::Context, app: &mut App) {
     }
 }
 
+/// 顶部：切换看哪一具。
+///
+/// 只有一具的时候不显示（省地方）；两具以上才出现一排小标签。
+fn creature_tabs(ui: &mut egui::Ui, app: &mut App) {
+    if app.sim.creatures.len() <= 1 {
+        return;
+    }
+    let mut pick = None;
+    ui.horizontal_wrapped(|ui| {
+        for i in 0..app.sim.creatures.len() {
+            let alive = app.sim.creature_alive(i);
+            let label = if alive {
+                app.sim.creatures[i].name.clone()
+            } else {
+                format!("{}（没了）", app.sim.creatures[i].name)
+            };
+            let mut txt = RichText::new(label).size(11.0);
+            if i == app.sim.active {
+                txt = txt.strong().color(c32(HOT));
+            } else if !alive {
+                txt = txt.color(c32(FAINT));
+            }
+            if ui.selectable_label(i == app.sim.active, txt).clicked() {
+                pick = Some(i);
+            }
+        }
+    });
+    if let Some(i) = pick {
+        app.sim.set_active(i);
+    }
+    ui.add_space(4.0);
+}
+
 /// 总生命值 + 一句话死因。
 fn headline(ui: &mut egui::Ui, app: &App) {
-    let b = app.sim.physio.bus;
+    let b = app.sim.creatures[app.sim.active].physio.bus;
     let v = vitality(&b);
     let (word, col) = if v > 0.75 {
         ("状态良好", OK)
@@ -165,8 +199,7 @@ fn piece_color(app: &App, idx: usize, part: PartId) -> Color32 {
         return Color32::from_rgba_unmultiplied(c[0], c[1], c[2], 200);
     }
     // 组织场里这一块的区域平均损伤
-    let dmg = app
-        .sim
+    let dmg = app.sim.creatures[app.sim.active]
         .tissue
         .as_ref()
         .map(|t| {
@@ -227,7 +260,7 @@ fn mean_damage_in(f: &anatomize_tissue::TissueField, poly: &[anatomize_core::Vec
 
 /// 器官：从生理指标反推。
 fn organs(ui: &mut egui::Ui, app: &App) {
-    let b = app.sim.physio.bus;
+    let b = app.sim.creatures[app.sim.active].physio.bus;
     let items: [(&str, f32, &str); 6] = [
         (
             "脑",
@@ -290,7 +323,7 @@ fn organs(ui: &mut egui::Ui, app: &App) {
 
 /// 数值细节。
 fn detail(ui: &mut egui::Ui, app: &App) {
-    let b = app.sim.physio.bus;
+    let b = app.sim.creatures[app.sim.active].physio.bus;
     egui::Grid::new("detail")
         .num_columns(2)
         .spacing([10.0, 2.0])

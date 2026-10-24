@@ -109,7 +109,7 @@ fn run_scenario(mut sc: Scenario, seconds: f32) -> Scenario {
             }
         }
         if i % 30 == 0 {
-            let b = sim.physio.bus;
+            let b = sim.creatures[sim.active].physio.bus;
             sc.samples.push(Sample {
                 t,
                 map: b.map,
@@ -122,7 +122,7 @@ fn run_scenario(mut sc: Scenario, seconds: f32) -> Scenario {
         sim.step();
     }
 
-    let b = sim.physio.bus;
+    let b = sim.creatures[sim.active].physio.bus;
     let first = |f: &dyn Fn(&Sample) -> bool| sc.samples.iter().find(|s| f(s)).map(|s| s.t);
     println!(
         "  结果：MAP<45 @ {:?}s，HR>130 @ {:?}s，意识<0.2 @ {:?}s；终末 MAP {:.1}，血量 {:.0}，失血 {:.0} mL",

@@ -193,7 +193,7 @@ impl Sim {
             .parts
             .iter()
             .position(|p| p.name == "pelvis")
-            .map(|i| self.piece_pose(self.body.primary[i]).1)
+            .map(|i| self.piece_pose(self.creatures[self.active].primary[i]).1)
             .unwrap_or(0.0);
         let (sin, cos) = rot.sin_cos();
         let to_world = |p: Vec2| {
@@ -310,16 +310,20 @@ impl Sim {
         } else {
             self.plan.parts[part.index()].offset
         };
-        let heats: Vec<Option<anatomize_tissue::HeatGrid>> = match self.tissue.as_ref() {
-            Some(t) => frags
-                .iter()
-                .map(|f| {
-                    let poly: Vec<Vec2> = f.polygon.iter().map(|v| *v + heat_offset).collect();
-                    Some(anatomize_tissue::sample_grid(&t.field, &poly, heat_offset))
-                })
-                .collect(),
-            None => vec![None; frags.len()],
-        };
+        // 用**这块所属**那具生物的组织场（多 ragdoll 时不能拿 active 的）。
+        // 道具的 `creature` 是 `u16::MAX`——它不属于任何一具，没有场。
+        let cr = self.body.pieces[pid.index()].creature as usize;
+        let heats: Vec<Option<anatomize_tissue::HeatGrid>> =
+            match self.creatures.get(cr).and_then(|c| c.tissue.as_ref()) {
+                Some(t) => frags
+                    .iter()
+                    .map(|f| {
+                        let poly: Vec<Vec2> = f.polygon.iter().map(|v| *v + heat_offset).collect();
+                        Some(anatomize_tissue::sample_grid(&t.field, &poly, heat_offset))
+                    })
+                    .collect(),
+                None => vec![None; frags.len()],
+            };
         // 主块 = 含原部件质心的那块
         let primary_idx = frags
             .iter()
@@ -396,6 +400,7 @@ impl Sim {
                     frozen_pose: None,
                     // 切开的道具两半都还是那个物品（换色、换名都对）
                     item: piece_item,
+                    creature: cr as u16,
                     heat: if fi == primary_idx {
                         None
                     } else {
@@ -413,10 +418,15 @@ impl Sim {
         // 道具没有 `PartId`（`part == NONE`），也就没有 primary / PartInstance
         // 要更新——它们的"代表块"就是自己。
         if part != PartId::NONE {
-            self.body.primary[part.index()] = primary;
+            let (new_body, new_collider) = {
+                let np = &self.body.pieces[primary.index()];
+                (np.body, np.collider)
+            };
+            let c = &mut self.creatures[cr];
+            c.primary[part.index()] = primary;
             // 主块换了刚体，`PartInstance` 也要跟着换
-            self.body.parts[part.index()].body = self.body.pieces[primary.index()].body;
-            self.body.parts[part.index()].collider = self.body.pieces[primary.index()].collider;
+            c.parts[part.index()].body = new_body;
+            c.parts[part.index()].collider = new_collider;
         }
 
         // --- 4.5 飞走的那半在原位变成 Outside ---
@@ -424,7 +434,7 @@ impl Sim {
         // 场钉在身体坐标系里（ADR-003），碎片飞出去之后场不会跟着走。
         // 不抹掉的话，F1 热力图会在原位置继续画那块已经飞走的肉——
         // 看起来就是"贴了张图"，跟身体完全脱节。
-        if let Some(t) = self.tissue.as_mut() {
+        if let Some(t) = self.creatures.get_mut(cr).and_then(|c| c.tissue.as_mut()) {
             // 道具的 `part` 是 NONE，没有 `plan.parts` 条目。它们的多边形
             // 本来就在"部件局部"（centroid = 0），所以 offset 当 0 用。
             let offset = if part == PartId::NONE {
@@ -663,10 +673,22 @@ impl Sim {
         if let Some(h) = &p.heat {
             return Some(h.clone());
         }
-        let t = self.tissue.as_ref()?;
+        let cr = p.creature as usize;
+        let t = self.creatures[cr].tissue.as_ref()?;
         let offset = self.plan.parts[p.part.index()].offset;
         let poly: Vec<Vec2> = p.polygon.iter().map(|v| *v + offset).collect();
         Some(anatomize_tissue::sample_grid(&t.field, &poly, offset))
+    }
+
+    /// 这块是不是它所属那具生物的**代表块**（每个部件只有一个）。
+    ///
+    /// "碎片"就是"不是代表块的身体块"——清除碎片用它判断。
+    pub fn is_primary(&self, id: PieceId) -> bool {
+        let p = &self.body.pieces[id.index()];
+        if p.deleted || p.part == PartId::NONE {
+            return false;
+        }
+        self.creatures[p.creature as usize].primary[p.part.index()] == id
     }
 
     /// 这块有没有骨头。
@@ -679,7 +701,7 @@ impl Sim {
         if p.deleted || p.part == PartId::NONE {
             return false;
         }
-        self.body.primary[p.part.index()] == id
+        self.creatures[p.creature as usize].primary[p.part.index()] == id
     }
 
     /// 一块碎片的世界位姿（米 / 弧度）。冻结的读快照，删除的返回零。
@@ -745,7 +767,7 @@ impl Sim {
 
     /// 部件的主块。
     pub fn primary_piece(&self, part: PartId) -> PieceId {
-        self.body.primary[part.index()]
+        self.creatures[self.active].primary[part.index()]
     }
 
     /// 还没冻结的块数。

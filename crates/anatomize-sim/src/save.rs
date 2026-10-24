@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use anatomize_body::{ASSET_HUMAN_01, BodyPlan, JointHealth, JointState};
 use anatomize_core::{PartId, Vec2};
-use anatomize_physio::{Physio, PhysioBus};
+use anatomize_physio::PhysioBus;
 use anatomize_tissue::{TissueConfig, TissueField, TissueSim};
 use rapier2d::prelude::*;
 
@@ -51,8 +51,15 @@ pub struct PieceSave {
     /// 物品目录下标。`None` = 身体的一部分。
     #[serde(default)]
     pub item: Option<u16>,
+    /// 属于哪一具生物（`u16::MAX` = 道具）。
+    #[serde(default = "no_creature")]
+    pub creature: u16,
     /// 已冻结的块没有刚体，位姿就在 `pos/rot` 里。
     pub frozen: bool,
+}
+
+fn no_creature() -> u16 {
+    u16::MAX
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +75,9 @@ pub struct JointSave {
     /// 这一刀能不能切断它（MaD2 的 `jointUserData.cuttable`）。
     #[serde(default = "yes")]
     pub cuttable: bool,
+    /// 属于哪一具生物。
+    #[serde(default)]
+    pub creature: u16,
 }
 
 fn yes() -> bool {
@@ -91,6 +101,19 @@ pub struct ConnSave {
     pub dir: f32,
 }
 
+/// 一具生物的非物理状态。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatureSave {
+    pub name: String,
+    /// 每个 `PartId` 的代表块。
+    pub primary: Vec<u32>,
+    pub bus: PhysioBus,
+    pub ambient_c: f32,
+    pub tissue_metab_base: f32,
+    /// 组织场。99% 的体积都在这儿。
+    pub tissue: Option<TissueField>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveFile {
     pub version: u32,
@@ -100,17 +123,14 @@ pub struct SaveFile {
     /// 世界大小（米）。读档时按它重建边界墙。
     pub world_w: f32,
     pub world_h: f32,
-    pub ambient_c: f32,
-    pub tissue_metab_base: f32,
-    pub bus: PhysioBus,
+    /// 所有生物。
+    #[serde(default)]
+    pub creatures: Vec<CreatureSave>,
     pub pieces: Vec<PieceSave>,
-    /// 每个 `PartId` 的代表块下标。
-    pub primary: Vec<u32>,
     pub joints: Vec<JointSave>,
     /// 玩家连出来的东西。老存档没有这一段，`serde(default)` 兜住。
     #[serde(default)]
     pub conns: Vec<ConnSave>,
-    pub tissue: Option<TissueField>,
     /// 累计切割次数与损伤记录（HUD 与回放用）。
     pub slices: u32,
     pub injuries: Vec<(u16, JointState, f32)>,
@@ -164,6 +184,7 @@ impl Sim {
                 linvel,
                 angvel,
                 item: p.item,
+                creature: p.creature,
                 frozen: p.is_frozen(),
             });
         }
@@ -173,6 +194,7 @@ impl Sim {
             .joints
             .iter()
             .map(|j| JointSave {
+                creature: j.creature,
                 a: j.a.0,
                 b: j.b.0,
                 anchor_a: j.anchor_a,
@@ -190,11 +212,19 @@ impl Sim {
             tick: self.tick.0,
             world_w: self.world.width,
             world_h: self.world.height,
-            ambient_c: self.ambient_c,
-            tissue_metab_base: self.tissue_metab_base,
-            bus: self.physio.bus,
+            creatures: self
+                .creatures
+                .iter()
+                .map(|c| CreatureSave {
+                    name: c.name.clone(),
+                    primary: c.primary.iter().map(|p| p.0).collect(),
+                    bus: c.physio.bus,
+                    ambient_c: c.ambient_c,
+                    tissue_metab_base: c.tissue_metab_base,
+                    tissue: c.tissue.as_ref().map(|t| t.field.clone()),
+                })
+                .collect(),
             pieces,
-            primary: self.body.primary.iter().map(|p| p.0).collect(),
             joints,
             conns: self
                 .conns
@@ -211,7 +241,6 @@ impl Sim {
                     dir: c.dir,
                 })
                 .collect(),
-            tissue: self.tissue.as_ref().map(|t| t.field.clone()),
             slices: self.slices,
             injuries: self
                 .injuries
@@ -235,16 +264,13 @@ impl Sim {
 
         // 先按标准骨架装一遍，拿到 `plan` / `ground` / 生理默认值
         let world = crate::WorldBounds::new(save.world_w, save.world_h);
-        let mut sim = Self::spawn_in_world(
+        let mut sim = Self::spawn_empty(
             plan,
-            Vec2::new(0.0, world.stand_height()),
             ground_y,
             anatomize_body::DamageConfig::asset().joint,
             world,
         );
         sim.tick = anatomize_core::Tick(save.tick);
-        sim.ambient_c = save.ambient_c;
-        sim.tissue_metab_base = save.tissue_metab_base;
         sim.slices = save.slices;
         sim.injuries = save
             .injuries
@@ -252,22 +278,7 @@ impl Sim {
             .map(|(id, st, t)| (anatomize_core::JointId(*id), *st, *t))
             .collect();
 
-        // 清空所有刚体与关节，按存档重建
-        let handles: Vec<RigidBodyHandle> = sim.body.pieces.iter().map(|p| p.body).collect();
-        for h in handles {
-            sim.physics.bodies.remove(
-                h,
-                &mut sim.physics.islands,
-                &mut sim.physics.colliders,
-                &mut sim.physics.impulse_joints,
-                &mut sim.physics.multibody_joints,
-                &mut sim.physics.soft_bodies,
-                true,
-            );
-        }
-        sim.body.pieces.clear();
-        sim.body.joints.clear();
-
+        // 从存档重建所有块（`spawn_empty` 里一块都没有）
         for ps in &save.pieces {
             let id = PieceId(sim.body.pieces.len() as u32);
             if ps.frozen {
@@ -283,6 +294,7 @@ impl Sim {
                     frozen_pose: Some((ps.pos, ps.rot)),
                     item: ps.item,
                     heat: None,
+                    creature: ps.creature,
                     deleted: false,
                 });
                 let _ = id;
@@ -323,21 +335,39 @@ impl Sim {
                 mass: ps.mass,
                 still_s: 0.0,
                 frozen_pose: None,
-                item: None,
+                item: ps.item,
                 heat: None,
+                creature: ps.creature,
                 deleted: false,
             });
         }
 
-        sim.body.primary = save.primary.iter().map(|i| PieceId(*i)).collect();
-        // `PartInstance` 的 handle 指向代表块
-        for (i, inst) in sim.body.parts.iter_mut().enumerate() {
-            if let Some(p) = sim.body.primary.get(i) {
+        // 每具生物：代表块 + 部件句柄 + 生理 + 组织场
+        for cs in &save.creatures {
+            let primary: Vec<PieceId> = cs.primary.iter().map(|i| PieceId(*i)).collect();
+            let mut parts = Vec::with_capacity(primary.len());
+            for (i, p) in primary.iter().enumerate() {
                 let piece = &sim.body.pieces[p.index()];
-                inst.body = piece.body;
-                inst.collider = piece.collider;
+                parts.push(crate::PartInstance {
+                    id: crate::PartId(i as u16),
+                    body: piece.body,
+                    collider: piece.collider,
+                });
             }
+            let mut c = crate::Creature::empty(cs.name.clone());
+            c.primary = primary;
+            c.parts = parts;
+            c.physio.bus = cs.bus;
+            c.ambient_c = cs.ambient_c;
+            c.tissue_metab_base = cs.tissue_metab_base;
+            c.tissue = cs.tissue.as_ref().map(|field| {
+                let mut t = TissueSim::new(field.clone(), TissueConfig::asset());
+                t.warmup(cs.bus.map);
+                t
+            });
+            sim.creatures.push(c);
         }
+        sim.active = 0;
 
         // 关节
         for js in &save.joints {
@@ -397,6 +427,7 @@ impl Sim {
                 tether,
                 tether_rest: js.tether_rest,
                 cuttable: js.cuttable,
+                creature: js.creature,
             });
         }
 
@@ -427,14 +458,7 @@ impl Sim {
             }
         }
 
-        // 生理与组织场
-        sim.physio = Physio::new(anatomize_physio::PhysioConfig::asset());
-        sim.physio.bus = save.bus;
-        if let Some(field) = &save.tissue {
-            let mut t = TissueSim::new(field.clone(), TissueConfig::asset());
-            t.warmup(sim.physio.bus.map);
-            sim.tissue = Some(t);
-        }
+        // 生理与组织场已经在上面按生物恢复了
         sim.fracture = FractureConfig::default();
         Ok(sim)
     }

@@ -88,6 +88,8 @@ impl Sim {
             frozen_pose: None,
             item: index,
             heat: None,
+            // 道具不属于任何一具生物
+            creature: u16::MAX,
             deleted: false,
         });
         id

@@ -195,8 +195,37 @@ def main() -> None:
         if n < 20:
             sys.exit(f"连接「{name}」没画出来（{n} px）")
 
-    print("[6/6] 通过")
-    for p in (base, cut, heat, props, build):
+    print("[6/7] 多 ragdoll …")
+    crowd = out / "app-crowd.png"
+    shoot(exe, crowd, "crowd")
+    d5 = diff(base, crowd)
+    print(f"  世界区域差 {d5 * 100:.2f}%")
+    if d5 < 0.05:
+        sys.exit(f"放了三具身体之后画面几乎没变（{d5 * 100:.2f}%）")
+
+    # 三具身体 ≈ 单具的 3 倍像素
+    im = Image.open(crowd).convert("RGBA")
+    w, h = im.size
+    px = im.load()
+    body = 0
+    for y in range(h):
+        for x in range(300, w - 62):
+            if px[x, y][:3] in LAYERS.values():
+                body += 1
+    im0 = Image.open(base).convert("RGBA")
+    px0 = im0.load()
+    one = 0
+    for y in range(h):
+        for x in range(300, w - 62):
+            if px0[x, y][:3] in LAYERS.values():
+                one += 1
+    ratio = body / max(1, one)
+    print(f"  身体像素 {one} → {body}（{ratio:.2f} 倍）")
+    if ratio < 2.2:
+        sys.exit(f"三具身体只有 {ratio:.2f} 倍的像素，没画出来")
+
+    print("[7/7] 通过")
+    for p in (base, cut, heat, props, build, crowd):
         print(f"  {p.relative_to(ROOT)}")
 
 

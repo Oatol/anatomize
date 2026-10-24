@@ -50,6 +50,8 @@ pub enum Action {
     Boom,
     /// 搭一台小机器：焊接 + 钉住 + 绳 + 活塞
     Build,
+    /// 再生成两具人偶（多 ragdoll 演示）
+    Crowd,
 }
 
 impl ShotPlan {
@@ -73,6 +75,7 @@ impl ShotPlan {
                 "props" => Some(Action::Props),
                 "boom" => Some(Action::Boom),
                 "build" => Some(Action::Build),
+                "crowd" => Some(Action::Crowd),
                 _ => None,
             });
         Some(Self {
