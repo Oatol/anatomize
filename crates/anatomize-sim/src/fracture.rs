@@ -300,8 +300,7 @@ impl Sim {
             Some(t) => frags
                 .iter()
                 .map(|f| {
-                    let poly: Vec<Vec2> =
-                        f.polygon.iter().map(|v| *v + heat_offset).collect();
+                    let poly: Vec<Vec2> = f.polygon.iter().map(|v| *v + heat_offset).collect();
                     anatomize_tissue::mean_channels(&t.field, &poly)
                 })
                 .collect(),
@@ -396,10 +395,7 @@ impl Sim {
         }
 
         // --- 4. 代表块 ---
-        let primary = new_ids
-            .get(primary_idx)
-            .copied()
-            .unwrap_or(new_ids[0]);
+        let primary = new_ids.get(primary_idx).copied().unwrap_or(new_ids[0]);
         // 道具没有 `PartId`（`part == NONE`），也就没有 primary / PartInstance
         // 要更新——它们的"代表块"就是自己。
         if part != PartId::NONE {
@@ -447,9 +443,7 @@ impl Sim {
             report.rewired_joints += 1;
         }
 
-        report
-            .cut_parts
-            .push(self.piece_name(pid).to_string());
+        report.cut_parts.push(self.piece_name(pid).to_string());
         true
     }
 
@@ -639,6 +633,27 @@ impl Sim {
                 Vec2::new(w.x, w.y)
             })
             .collect()
+    }
+
+    /// 这块的四个通道平均值（灌注 / 氧 / 温度 / 损伤）。热力图滤镜用。
+    ///
+    /// - **碎片**：读切开那一刻抄下来的快照（`Piece::heat`）——它飞走了，
+    ///   不能再查场。
+    /// - **主块**：从场里现算，每帧更新，所以能看到出血、缺氧、降温的变化。
+    /// - **道具**：`None`（没有组织）。
+    pub fn piece_heat(&self, id: PieceId) -> Option<[f32; 4]> {
+        let p = &self.body.pieces[id.index()];
+        if p.deleted || p.part == PartId::NONE {
+            return None;
+        }
+        if let Some(h) = p.heat {
+            return Some(h);
+        }
+        let t = self.tissue.as_ref()?;
+        let offset = self.plan.parts[p.part.index()].offset;
+        let poly: Vec<Vec2> = p.polygon.iter().map(|v| *v + offset).collect();
+        // 步长 4：主块每帧都要算，全扫太贵；热力图是滤镜，不需要 texel 精度
+        Some(anatomize_tissue::mean_channels_strided(&t.field, &poly, 4))
     }
 
     /// 一块碎片的世界位姿（米 / 弧度）。冻结的读快照，删除的返回零。

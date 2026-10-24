@@ -50,11 +50,12 @@ impl View<'_> {
         painter.rect_filled(view, 0.0, c32(ui::BG));
         self.paint_grid(painter, view);
         self.paint_ground(painter, view);
+        self.paint_body(painter, view);
+        // 热力图是**叠加层**，画在身体之后。画在之前会被不透明的身体完全盖住——
+        // 之前就是这样，所以热力图只在身体边缘露一点点，看起来像"背后一张图"。
         if let Some(ch) = self.heat {
             self.paint_heat(painter, view, ch);
-            self.paint_piece_heat(painter, view, ch);
         }
-        self.paint_body(painter, view);
         if self.debug {
             self.paint_vessels(painter, view);
             self.paint_joints(painter, view);
@@ -110,76 +111,22 @@ impl View<'_> {
         painter.line_segment([t0, t1], wall);
     }
 
-    /// 组织场热力图：每个 texel 一个小方块。
+    /// 热力图滤镜：**每块一层色**。
     ///
-    /// 24672 个 texel 全画会拖慢 egui，所以按 2×2 合并（约 6000 个矩形）。
-    /// 只在打开叠加时画——默认关闭。
+    /// # 为什么不是"整张场逐 texel"
+    ///
+    /// 场钉在身体坐标系里（ADR-003），是一整张图。逐 texel 画它，看起来就是
+    /// "整个 ragdoll 背后贴了一张贴图"——而且肢体切出去之后，那张图还在原位。
+    ///
+    /// 用户的原话是"每一个肢体它有不同的层次……可以理解为切换滤镜"。
+    /// 所以改成：**一块肉一层半透明色**，色跟着块的多边形走。
+    ///
+    /// - 主块：每帧从场里现算平均值，能看到出血/缺氧/降温
+    /// - 碎片：用切开那一刻抄下来的快照，跟着碎片飞
     fn paint_heat(&self, painter: &Painter, view: Rect, ch: HeatChannel) {
-        let Some(t) = self.sim.tissue.as_ref() else {
-            return;
-        };
-        let Some(anchor) = self.sim.body_origin_world() else {
-            return;
-        };
-        let f = &t.field;
-        let step = 2usize;
-        let texel = f.texel_cm * 0.01;
-        let cell = texel * step as f32;
-        // 场钉在**身体坐标系**里，所以画的时候要跟着身体转。
-        // 不转的话人躺下了、热力图还竖着——那就是"贴了张图"。
-        let rot = self.sim.body_rotation();
-        let (sin, cos) = rot.sin_cos();
-        let to_world =
-            |lx: f32, ly: f32| anchor + Vec2::new(lx * cos - ly * sin, lx * sin + ly * cos);
-
-        for y in (0..f.h as usize).step_by(step) {
-            for x in (0..f.w as usize).step_by(step) {
-                let i = y * f.w as usize + x;
-                if f.kind[i] == anatomize_tissue::TissueKind::Outside {
-                    continue;
-                }
-                let v = match ch {
-                    HeatChannel::Perfusion => f.perfusion[i],
-                    HeatChannel::Oxygen => f.o2[i],
-                    HeatChannel::Temperature => f.temp[i],
-                    HeatChannel::Damage => f.damage[i],
-                };
-                let c = ch.color(ch.normalize(v));
-                let lx = f.origin.x * 0.01 + x as f32 * texel;
-                let ly = f.origin.y * 0.01 + y as f32 * texel;
-                // 四个角都转，不然方块会跟着转成平行四边形
-                let s0 = self.cam.to_screen(to_world(lx, ly), view);
-                let s2 = self.cam.to_screen(to_world(lx + cell, ly + cell), view);
-                if !view.intersects(Rect::from_two_pos(s0, s2)) {
-                    continue;
-                }
-                painter.add(Shape::convex_polygon(
-                    vec![
-                        s0,
-                        self.cam.to_screen(to_world(lx + cell, ly), view),
-                        s2,
-                        self.cam.to_screen(to_world(lx, ly + cell), view),
-                    ],
-                    c32a(c, 150),
-                    Stroke::NONE,
-                ));
-            }
-        }
-    }
-
-    /// 碎片的"滤镜层"：一块肉一层色，色跟着肉飞。
-    ///
-    /// 场钉在身体坐标系里，块飞走之后就不能再查场了。所以切开的那一刻把
-    /// 这块的平均值抄下来（`Piece::heat`），之后热力图跟着块走。
-    ///
-    /// 这就是用户要的效果：不是"在 ragdoll 后面贴一张图"，而是**每块自带一层**。
-    fn paint_piece_heat(&self, painter: &Painter, view: Rect, ch: HeatChannel) {
         for i in 0..self.sim.body.pieces.len() {
-            let p = &self.sim.body.pieces[i];
-            if p.deleted {
-                continue;
-            }
-            let Some(h) = p.heat else {
+            let id = PieceId(i as u32);
+            let Some(h) = self.sim.piece_heat(id) else {
                 continue;
             };
             let v = match ch {
@@ -188,14 +135,14 @@ impl View<'_> {
                 HeatChannel::Temperature => h[2],
                 HeatChannel::Damage => h[3],
             };
-            let poly = self.sim.piece_polygon(PieceId(i as u32));
+            let poly = self.sim.piece_polygon(id);
             if poly.len() < 3 {
                 continue;
             }
             let pts: Vec<Pos2> = poly.iter().map(|q| self.cam.to_screen(*q, view)).collect();
             painter.add(Shape::convex_polygon(
                 pts,
-                c32a(ch.color(ch.normalize(v)), 150),
+                c32a(ch.color(ch.normalize(v)), 170),
                 Stroke::NONE,
             ));
         }

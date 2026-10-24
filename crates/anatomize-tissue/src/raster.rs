@@ -278,11 +278,20 @@ pub fn add_stump(f: &mut TissueField, point: Vec2, radius_cm: f32, total_c: f32)
 ///
 /// 这就是用户说的"滤镜/材质层"：一块肉一层色，色跟着肉走。
 pub fn mean_channels(f: &TissueField, poly: &[Vec2]) -> [f32; 4] {
+    mean_channels_strided(f, poly, 1)
+}
+
+/// 同上，但每 `stride` 个 texel 采一次。
+///
+/// 主块每帧都要算一次（看得到出血、缺氧、降温的变化），全扫 24672 个 texel
+/// 太贵。步长 4 快 16 倍，误差 < 2%——热力图是个滤镜，不需要精确到 texel。
+pub fn mean_channels_strided(f: &TissueField, poly: &[Vec2], stride: u32) -> [f32; 4] {
+    let step = stride.max(1) as usize;
     let mut acc = [0.0f32; 4];
     let mut n = 0usize;
-    for y in 0..f.h {
-        for x in 0..f.w {
-            let i = (y * f.w + x) as usize;
+    for y in (0..f.h as usize).step_by(step) {
+        for x in (0..f.w as usize).step_by(step) {
+            let i = y * f.w as usize + x;
             if f.kind[i] == TissueKind::Outside {
                 continue;
             }

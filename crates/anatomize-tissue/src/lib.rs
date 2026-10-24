@@ -64,8 +64,8 @@ pub use damage::time_to_hypoxia;
 pub use field::TissueField;
 pub use pressure::{PressureSolver, arterial_inflow, venous_return, wound_flux};
 pub use raster::{
-    Shape, add_stump, apply_wound, apply_wound_path, clear_region, mean_channels, rasterize,
-    set_inlet, sever_supply,
+    Shape, add_stump, apply_wound, apply_wound_path, clear_region, mean_channels,
+    mean_channels_strided, rasterize, set_inlet, sever_supply,
     sever_supply_beyond,
 };
 
