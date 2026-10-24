@@ -117,7 +117,8 @@ impl Tool {
 
     pub fn key(self) -> egui::Key {
         match self {
-            Tool::Select => egui::Key::Q,
+            // 选择没有快捷键：Q 让给"放物品"了（放置是高频操作）
+            Tool::Select => egui::Key::Backtick,
             Tool::Hand => egui::Key::Num1,
             Tool::Knife => egui::Key::Num2,
             Tool::Hammer => egui::Key::Num3,

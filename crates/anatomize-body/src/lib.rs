@@ -12,10 +12,10 @@
 pub mod health;
 pub mod palette;
 
-pub use palette::{layer_color, layer_name};
 pub use health::{DamageConfig, JointHealth, JointLoad, JointParams, JointState};
+pub use palette::{layer_color, layer_name};
 
-use anatomize_core::{JointId, PartId, VesselId, Vec2};
+use anatomize_core::{JointId, PartId, Vec2, VesselId};
 use serde::Deserialize;
 
 pub const ASSET_HUMAN_01: &str = include_str!("../../../assets/body_plans/human_01.ron");
@@ -119,6 +119,27 @@ pub struct BodyPlan {
     pub vessels: Vec<Vessel>,
 }
 
+impl BodyPlan {
+    /// 站立时身体原点该放多高（米）。
+    ///
+    /// = 最低那个顶点到原点的距离。之前用 `WorldBounds::stand_height()` 的
+    /// 估算值（0.75），实际是 0.66 —— 那 9cm 的落差会让人一生成就砸在地上，
+    /// 然后被反弹和关节限位一起推歪。
+    pub fn stand_height(&self) -> f32 {
+        let mut lowest = f32::INFINITY;
+        for p in &self.parts {
+            for v in &p.polygon {
+                lowest = lowest.min(p.offset.y + v.y);
+            }
+        }
+        if lowest.is_finite() {
+            (-lowest * 0.01).max(0.0)
+        } else {
+            0.7
+        }
+    }
+}
+
 /// 血管端点。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VesselNode {
@@ -146,10 +167,7 @@ pub struct Vessel {
 
 impl Vessel {
     pub fn total_len(&self) -> f32 {
-        self.path
-            .windows(2)
-            .map(|w| (w[1] - w[0]).length())
-            .sum()
+        self.path.windows(2).map(|w| (w[1] - w[0]).length()).sum()
     }
 }
 
@@ -383,7 +401,10 @@ fn compile_vessels(
                     let idx = *index
                         .get(name)
                         .ok_or_else(|| BodyError::UnknownPart(name.clone()))?;
-                    (VesselNode::Part(PartId(idx as u16)), Some(PartId(idx as u16)))
+                    (
+                        VesselNode::Part(PartId(idx as u16)),
+                        Some(PartId(idx as u16)),
+                    )
                 }
             })
         };
@@ -538,7 +559,10 @@ mod tests {
             .map(|v| v.flow_share)
             .sum();
         println!("动脉 flow_share 合计 {sum:.4}");
-        assert!((sum - 1.0).abs() < 1e-3, "flow_share 合计应为 1，实际 {sum}");
+        assert!(
+            (sum - 1.0).abs() < 1e-3,
+            "flow_share 合计应为 1，实际 {sum}"
+        );
 
         let fem = plan.vessel("femoral_l").expect("应该有左股动脉");
         assert_eq!(fem.to_part, plan.part("thigh_l").map(|p| p.id));

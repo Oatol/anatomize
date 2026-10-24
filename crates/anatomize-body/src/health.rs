@@ -243,13 +243,12 @@ impl JointHealth {
             // 拉得越狠，软组织断得越快
             let pull = (load.impulse / p.impulse_threshold).clamp(0.25, 4.0);
             let stretch = (load.tether_stretch * 20.0).clamp(0.0, 4.0);
-            self.tether =
-                (self.tether - p.tether_wear * pull * (1.0 + stretch) * dt).max(0.0);
+            self.tether = (self.tether - p.tether_wear * pull * (1.0 + stretch) * dt).max(0.0);
         }
 
         // --- 4. 炎症消退 / 疼痛 / 松弛度 ---
-        self.inflammation = (self.inflammation - self.inflammation / p.inflammation_tau * dt)
-            .clamp(0.0, 1.0);
+        self.inflammation =
+            (self.inflammation - self.inflammation / p.inflammation_tau * dt).clamp(0.0, 1.0);
         self.pain = ((1.0 - self.integrity) * 0.6 + self.inflammation * 0.4).clamp(0.0, 1.0);
         self.rom_scale = 1.0 + (1.0 - self.integrity) * 0.35;
 
@@ -331,7 +330,10 @@ mod tests {
                 break;
             }
         }
-        println!("状态序列 {:?}", seen.iter().map(|s| s.name()).collect::<Vec<_>>());
+        println!(
+            "状态序列 {:?}",
+            seen.iter().map(|s| s.name()).collect::<Vec<_>>()
+        );
         assert!(seen.contains(&JointState::Sprained), "应先扭伤");
         assert!(seen.contains(&JointState::Subluxed), "应再半脱位");
         assert!(seen.contains(&JointState::Dislocated), "应再脱位");
@@ -350,7 +352,10 @@ mod tests {
                 break;
             }
         }
-        println!("冲量尖峰后状态 {:?}，integrity {:.3}", transitioned, h.integrity);
+        println!(
+            "冲量尖峰后状态 {:?}，integrity {:.3}",
+            transitioned, h.integrity
+        );
         assert_eq!(transitioned, Some(JointState::Sprained));
     }
 

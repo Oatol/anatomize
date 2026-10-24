@@ -411,3 +411,184 @@ fn connections_survive_a_save_and_load() {
     println!("读档后焊点距离 {d0:.3} → {d1:.3}");
     assert!((d1 - d0).abs() < 0.05, "读档之后焊接失效了");
 }
+
+/// 抓取不能抖：目标不动的时候，被抓的那块要**稳定下来**。
+///
+/// 第一版的刚度用的是整块质量（`k = m·ω²`），而抓取点的等效质量可能只有
+/// 整块的几十分之一——力给大了 30 倍，那块就开始自激振荡：推过头 → 反向
+/// 推 → 越推越大。这个测试盯着"目标不动时速度应该收敛"。
+#[test]
+fn a_grab_converges_instead_of_oscillating() {
+    let mut sim = world();
+    let arm = sim
+        .plan
+        .parts
+        .iter()
+        .position(|p| p.name == "forearm_l")
+        .expect("左前臂");
+    let id = sim.body.primary[arm];
+    let (p, _) = sim.piece_pose(id);
+
+    // 抓在**外端**（离质心 6cm），目标就设在原地
+    assert!(sim.grab(id, p + Vec2::new(0.06, 0.0)));
+    sim.drag_to(p + Vec2::new(0.06, 0.0));
+
+    // 先让它收敛
+    for _ in 0..60 {
+        sim.step();
+    }
+    // 再看 60 步里速度的峰值
+    let mut max_v = 0.0f32;
+    let mut prev_r = sim.piece_pose(id).1;
+    let mut max_w = 0.0f32;
+    for _ in 0..60 {
+        sim.step();
+        max_v = max_v.max(sim.piece_velocity(id).length());
+        let r = sim.piece_pose(id).1;
+        max_w = max_w.max(((r - prev_r) * 60.0).abs());
+        prev_r = r;
+    }
+    println!("抓取稳定后：最大线速度 {max_v:.3} m/s，最大角速度 {max_w:.2} rad/s");
+    assert!(max_v < 1.5, "抓取在抖：线速度 {max_v:.2} m/s");
+    assert!(max_w < 6.0, "抓取在抖：角速度 {max_w:.2} rad/s");
+}
+
+/// 拖着一个物品走，速度不该爆掉。
+#[test]
+fn dragging_a_crate_does_not_blow_up() {
+    let mut sim = world();
+    let id = sim.spawn_item_by_id("crate", Vec2::new(1.0, 1.2)).unwrap();
+    for _ in 0..30 {
+        sim.step();
+    }
+    let (p, _) = sim.piece_pose(id);
+    // 抓在角上（力臂最大）
+    assert!(sim.grab(id, p + Vec2::new(0.2, 0.2)));
+    let mut max_v = 0.0f32;
+    for k in 0..120 {
+        let t = k as f32 / 60.0;
+        sim.drag_to(p + Vec2::new(t.sin() * 0.4, t.cos() * 0.3));
+        sim.step();
+        max_v = max_v.max(sim.piece_velocity(id).length());
+    }
+    println!("拖着木箱走 2 秒：最大速度 {max_v:.2} m/s");
+    assert!(max_v < 12.0, "拖拽速度爆了：{max_v:.2} m/s");
+}
+
+// ---------------------------------------------------------------------------
+// 站姿（姿态控制改成关节电机之后）
+// ---------------------------------------------------------------------------
+
+/// 生成之后要**站得住**：10 秒后还立着，而且不抖。
+///
+/// 这条测试盯着三个真 bug：
+///
+/// 1. 生成高度用了估算的 0.75 而不是实际的 0.66 —— 人一出生就砸地上。
+/// 2. `enable_posture()` 在跑完 150 帧之后才调 —— 那时候人已经躺下了，
+///    于是"保持现状"把目标定成了躺姿。
+/// 3. 姿态控制用外部力矩 + 全局刚度 26 —— 撑不住体重；刚度调到 1500 又会
+///    因为显式积分发散（`ω·dt ≈ 1`）。改成 rapier 的关节电机（隐式）才对。
+#[test]
+fn a_spawned_body_stays_upright() {
+    let plan = BodyPlan::from_ron(ASSET_HUMAN_01).unwrap();
+    let w = WorldBounds::default();
+    let stand = plan.stand_height();
+    let mut sim = Sim::spawn_in(plan, Vec2::new(0.0, stand), w);
+    sim.attach_tissue(&anatomize_tissue::TissueConfig::asset());
+    sim.stand();
+
+    let mut jitter = 0.0f32;
+    let mut prev = 0.0f32;
+    for k in 0..600 {
+        sim.step();
+        let (_, rot) = sim.piece_pose(sim.body.primary[0]);
+        if k > 120 {
+            jitter = jitter.max(((rot - prev) * 60.0).abs());
+        }
+        prev = rot;
+    }
+    let (pos, rot) = sim.piece_pose(sim.body.primary[0]);
+    println!(
+        "10 秒后：骨盆 ({:.3}, {:.3})，倾角 {:.3} rad（{:.1}°），抖动 {:.2} rad/s",
+        pos.x,
+        pos.y,
+        rot,
+        rot.to_degrees(),
+        jitter
+    );
+    assert!(rot.abs() < 0.25, "人倒了：倾角 {:.1}°", rot.to_degrees());
+    assert!(pos.x.abs() < 0.25, "人滑走了：x = {:.3}", pos.x);
+    assert!(jitter < 1.0, "站着还在抖：{jitter:.2} rad/s");
+}
+
+/// 姿态控制关掉之后，电机也必须关掉。
+///
+/// 电机是挂在关节上的约束，`posture = None` 只是不再更新它——不显式归零的话
+/// "关掉姿态控制"等于没关。
+#[test]
+fn disabling_posture_actually_lets_go() {
+    let mut sim = world();
+    sim.stand();
+    for _ in 0..120 {
+        sim.step();
+    }
+    let before = sim.joint_load(0).angle;
+    sim.disable_posture();
+    // 拉一下胳膊，身体该软下去
+    let arm = sim
+        .plan
+        .parts
+        .iter()
+        .position(|p| p.name == "forearm_l")
+        .unwrap();
+    let id = sim.body.primary[arm];
+    let (p, _) = sim.piece_pose(id);
+    sim.strike_piece(id, Vec2::new(200.0, 60.0), p);
+    for _ in 0..120 {
+        sim.step();
+    }
+    let after = sim.joint_load(0).angle;
+    println!("关掉姿态控制之后，腰部角度 {before:.3} → {after:.3}");
+    assert!(
+        (after - before).abs() > 0.02,
+        "关掉姿态控制之后关节还被电机锁着（{before:.3} → {after:.3}）"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 镜像放置
+// ---------------------------------------------------------------------------
+
+/// E 键镜像：顶点 x 取反，绕向仍然是逆时针。
+#[test]
+fn a_mirrored_item_is_still_ccw() {
+    let mut sim = world();
+    let def = sim.catalog.get("knife").expect("目录里有刀").clone();
+    let a = sim.spawn_item(&def, Vec2::new(-1.0, 1.4));
+    let b = sim.spawn_item_oriented(&def, Vec2::new(1.0, 1.4), true);
+
+    let pa = sim.body.pieces[a.index()].polygon.clone();
+    let pb = sim.body.pieces[b.index()].polygon.clone();
+    assert_eq!(pa.len(), pb.len());
+
+    // 面积都是正的（逆时针）
+    assert!(anatomize_core::polygon_area(&pa) > 0.0);
+    assert!(
+        anatomize_core::polygon_area(&pb) > 0.0,
+        "镜像之后绕向反了，面积是负的"
+    );
+    // 镜像之后包围盒的 x 是对称的
+    let bx = |p: &[Vec2]| {
+        let mut lo = f32::INFINITY;
+        let mut hi = f32::NEG_INFINITY;
+        for v in p {
+            lo = lo.min(v.x);
+            hi = hi.max(v.x);
+        }
+        (lo, hi)
+    };
+    let (alo, ahi) = bx(&pa);
+    let (blo, bhi) = bx(&pb);
+    println!("原 {alo:.2}..{ahi:.2}，镜像 {blo:.2}..{bhi:.2}");
+    assert!((alo + bhi).abs() < 1e-4 && (ahi + blo).abs() < 1e-4);
+}

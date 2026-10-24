@@ -389,14 +389,26 @@ impl View<'_> {
 
             match c.kind {
                 ConnKind::Weld => {
-                    painter.line_segment([a, b], Stroke::new(3.0_f32, col));
-                    for s in [a, b] {
-                        painter.rect_filled(
-                            Rect::from_center_size(s, egui::vec2(5.0, 5.0)),
-                            1.0,
-                            col,
-                        );
-                    }
+                    // 焊接的两端锚点**重合**（建的时候就是同一个世界点），
+                    // 画 a→b 得到零长度，什么都看不见。所以画成一枚"卡箍"：
+                    // 一根垂直于两块质心连线的粗线 + 中点一个方块。
+                    let dir = match c.b {
+                        Some(b) => {
+                            let (pa, _) = self.sim.piece_pose(c.a);
+                            let (pb, _) = self.sim.piece_pose(b);
+                            let d = pb - pa;
+                            if d.length() < 1e-4 {
+                                Vec2::new(1.0, 0.0)
+                            } else {
+                                d.normalize()
+                            }
+                        }
+                        None => Vec2::new(1.0, 0.0),
+                    };
+                    // 屏幕上的垂直方向
+                    let n = egui::vec2(-dir.y, dir.x) * 7.0;
+                    painter.line_segment([a + n, a - n], Stroke::new(3.0_f32, col));
+                    painter.rect_filled(Rect::from_center_size(a, egui::vec2(5.0, 5.0)), 1.0, col);
                 }
                 ConnKind::Pin => {
                     // 钉头：一个菱形

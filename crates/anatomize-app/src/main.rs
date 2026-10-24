@@ -69,6 +69,14 @@ pub struct App {
     pub fps: f32,
     /// 当前选中的物品分类下标。
     pub item_category: usize,
+    /// 当前选中的**物品**（目录下标）。`None` = 还没选。
+    ///
+    /// 物品栏改成"先选后放"：点卡片只是选中，按 Q 在光标处放、按 E 镜像放。
+    /// 之前是点一下就在视野中心生成——那样摆一个架子要反复点，而且位置由
+    /// 相机决定，不是玩家决定。
+    pub item_pick: Option<usize>,
+    /// 光标在世界里的位置（米）。每帧更新，Q/E 用它当放置点。
+    pub cursor_world: Vec2,
     /// 粒子（切割喷血、爆炸碎片）。
     pub particles: particles::Particles,
     /// 需要点两下的工具，第一次点完挂在这里。
@@ -102,20 +110,21 @@ impl App {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         let plan = BodyPlan::from_ron(ASSET_HUMAN_01).expect("内置人体计划解析失败");
-        // 地面在 y = 0，人站在上面（脚约 -0.7，头约 +0.7）。
+        let plan_stand = plan.stand_height();
+        // 地面在 y = 0，人站在上面（脚约 -0.66，头约 +0.63）。
         //
         // 别学离线 demo 用 y = 40 / 地面 -80：那是为了留出下落空间，
         // 结果身体在 120 帧里自由落体了 20 米，窗口里根本看不到人。
         let world = WorldBounds::default();
-        let mut sim = Sim::spawn_in(plan, Vec2::new(0.0, world.stand_height()), world);
+        // **站在地面上**，不是"从地面上方掉下来"。`plan.stand_height()` 是最低
+        // 顶点到原点的距离（0.66），不是估算的 0.75——那 9cm 的落差会让人
+        // 一生成就砸地，然后被反弹推歪。
+        let mut sim = Sim::spawn_in(plan, Vec2::new(0.0, plan_stand), world);
         sim.attach_tissue(&TissueConfig::asset());
-        // **先落地稳定，再开姿态控制。**
-        // 顺序反过来的话，目标角取的是"刚装配好、还没下沉"的姿态，
-        // 之后身体下沉 5~10cm，PD 一直在追一个追不上的目标 —— 视觉上就是抽搐。
-        for _ in 0..150 {
-            sim.step();
-        }
-        sim.enable_posture();
+        // **一生成就站起来**（目标角 = 装配姿态 = 全 0）。
+        // 之前是"先跑 150 帧再开姿态控制"，那时候人已经躺在地上了——
+        // 于是 `holding` 把目标定成了躺姿，人就这么歪着站。
+        sim.stand();
 
         Self {
             sim,
@@ -140,6 +149,8 @@ impl App {
             load_menu: None,
             fps: 60.0,
             item_category: 0,
+            item_pick: None,
+            cursor_world: Vec2::ZERO,
             particles: particles::Particles::default(),
             pending: None,
             screen: if shot_mode {
@@ -479,55 +490,56 @@ impl App {
                 self.sim.sever_joint("hip_r");
             }
             shot::Action::Build => {
-                // 一台"天平"：钉住一块当支点，焊一根长板当臂，两头挂东西。
-                // 顺便演示绳和活塞——四种连接都在一张图上。
+                // 一台"天平" + 一组铰链 + 一对活塞。
+                //
+                // **位置全部落在视野内**：默认相机是 420 px/m、窗口 1280×800，
+                // 世界可见范围只有 x ∈ [-1.1, 1.1]、y ∈ [-0.2, 1.7]。
+                // 摆到 ±1.3 去就出画了——之前焊接的像素统计是 0，就是这个原因。
+                // 身体占 x ∈ [-0.25, 0.25]，所以东西都放两侧。
                 let c = self.cam.center;
-                let base = c + Vec2::new(0.0, -0.2);
-                if let Some(arm) = self
-                    .sim
-                    .spawn_item_by_id("plank", base + Vec2::new(0.0, 0.3))
-                {
-                    // 钉住长板中点 = 支点
-                    self.sim
-                        .connect(ConnKind::Pin, arm, None, base + Vec2::new(0.0, 0.3));
+
+                // --- 左边：天平 ---
+                // 长板（2m 长）当横臂，钉住中点当支点
+                let pivot = c + Vec2::new(-0.72, 0.45);
+                if let Some(arm) = self.sim.spawn_item_by_id("plank", pivot) {
+                    self.sim.connect(ConnKind::Pin, arm, None, pivot);
                     // 左端焊一个铁球
-                    if let Some(ball) = self
-                        .sim
-                        .spawn_item_by_id("ball", base + Vec2::new(-0.85, 0.3))
-                    {
-                        let at = base + Vec2::new(-0.85, 0.3);
-                        self.sim.connect(ConnKind::Weld, arm, Some(ball), at);
+                    let bat = c + Vec2::new(-1.0, 0.45);
+                    if let Some(ball) = self.sim.spawn_item_by_id("ball", bat) {
+                        self.sim.connect(ConnKind::Weld, arm, Some(ball), bat);
                     }
-                    // 右端挂一个木箱，用绳
-                    if let Some(crate_) = self
-                        .sim
-                        .spawn_item_by_id("crate", base + Vec2::new(0.9, -0.1))
-                    {
+                    // 右端用绳吊一个木箱
+                    let cat = c + Vec2::new(-0.45, 0.05);
+                    if let Some(crate_) = self.sim.spawn_item_by_id("crate", cat) {
                         self.sim.connect_at(
                             ConnKind::Rope,
                             arm,
                             Some(crate_),
-                            base + Vec2::new(0.85, 0.3),
-                            Some(base + Vec2::new(0.9, -0.05)),
+                            c + Vec2::new(-0.45, 0.45),
+                            Some(c + Vec2::new(-0.45, 0.18)),
                         );
                     }
                 }
-                // 右边再挂一个铰链：一块长板 + 一个木箱，能相对摆动
-                if let Some(h1) = self.sim.spawn_item_by_id("plank", c + Vec2::new(1.5, 0.6))
-                    && let Some(h2) = self.sim.spawn_item_by_id("crate", c + Vec2::new(1.5, 0.15))
+
+                // --- 右边：铰链（长板 + 木箱，能相对摆动）---
+                if let Some(h1) = self
+                    .sim
+                    .spawn_item_by_id("plank", c + Vec2::new(0.72, 0.75))
+                    && let Some(h2) = self.sim.spawn_item_by_id("crate", c + Vec2::new(0.72, 0.3))
                 {
-                    let at = c + Vec2::new(1.5, 0.4);
-                    self.sim.connect(ConnKind::Hinge, h1, Some(h2), at);
+                    self.sim
+                        .connect(ConnKind::Hinge, h1, Some(h2), c + Vec2::new(0.72, 0.52));
                 }
-                // 地面上装一个活塞，把两块水泥块撑开
+
+                // --- 地面：两块水泥块之间装一个活塞 ---
                 if let Some(a) = self
                     .sim
-                    .spawn_item_by_id("block", c + Vec2::new(-1.4, -0.55))
+                    .spawn_item_by_id("block", c + Vec2::new(0.45, -0.55))
                     && let Some(b) = self
                         .sim
-                        .spawn_item_by_id("block", c + Vec2::new(-1.0, -0.55))
+                        .spawn_item_by_id("block", c + Vec2::new(0.85, -0.55))
                 {
-                    let at = c + Vec2::new(-1.2, -0.55);
+                    let at = c + Vec2::new(0.65, -0.55);
                     if let Some(i) = self.sim.connect(ConnKind::Piston, a, Some(b), at) {
                         self.sim.toggle_piston(i);
                     }
@@ -552,12 +564,13 @@ impl App {
                 }
             }
             shot::Action::Props => {
+                // 摆在身体**两侧**：身体现在站起来了，正中是它的位置。
                 let c = self.cam.center;
                 for (id, off) in [
-                    ("crate", Vec2::new(0.9, -0.4)),
-                    ("ball", Vec2::new(-0.9, -0.3)),
-                    ("plank", Vec2::new(0.0, 0.5)),
-                    ("knife", Vec2::new(-0.5, 0.2)),
+                    ("crate", Vec2::new(1.1, -0.9)),
+                    ("ball", Vec2::new(-1.2, -0.85)),
+                    ("plank", Vec2::new(1.3, -0.2)),
+                    ("knife", Vec2::new(-1.35, -0.15)),
                 ] {
                     self.sim.spawn_item_by_id(id, c + off);
                 }
@@ -569,28 +582,38 @@ impl App {
     }
 
     /// 在视野中心生成一个物品。
-    pub fn spawn_at_cursor(&mut self, item_id: &str) {
-        let at = self.cam.center + Vec2::new(0.0, -0.4);
-        if self.sim.spawn_item_by_id(item_id, at).is_some() {
-            let name = self
-                .sim
-                .catalog
-                .get(item_id)
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| item_id.to_string());
-            self.say(format!("生成了{name}"));
+    /// 在光标处放一个物品。`mirror` = 左右镜像（E 键）。
+    pub fn place_item(&mut self, mirror: bool) {
+        let Some(idx) = self.item_pick else {
+            self.say("先在左边选一个物品");
+            return;
+        };
+        let Some(def) = self.sim.catalog.items.get(idx).cloned() else {
+            return;
+        };
+        let at = self.cursor_world;
+        if self
+            .sim
+            .spawn_item_by_id_oriented(&def.id, at, mirror)
+            .is_some()
+        {
+            let suffix = if mirror { "（镜像）" } else { "" };
+            self.say(format!("放了{}{suffix}", def.name));
         }
+    }
+
+    /// 当前选中的物品定义。
+    pub fn picked_item(&self) -> Option<&anatomize_sim::ItemDef> {
+        self.sim.catalog.items.get(self.item_pick?)
     }
 
     /// 重开一个世界（指定尺寸）。
     pub fn reset_world(&mut self, world: WorldBounds) {
         let plan = BodyPlan::from_ron(ASSET_HUMAN_01).expect("内置人体计划解析失败");
-        let mut sim = Sim::spawn_in(plan, Vec2::new(0.0, world.stand_height()), world);
+        let stand = plan.stand_height();
+        let mut sim = Sim::spawn_in(plan, Vec2::new(0.0, stand), world);
         sim.attach_tissue(&TissueConfig::asset());
-        for _ in 0..150 {
-            sim.step();
-        }
-        sim.enable_posture();
+        sim.stand();
         self.sim = sim;
         self.selected = None;
         self.particles.clear();
@@ -939,6 +962,17 @@ impl eframe::App for App {
                 if explosive {
                     self.particles.burst(at, 40.0);
                 }
+            }
+            // Q / E：在光标处放物品（E 是左右镜像）。
+            //
+            // 取舍：Q 原来是"选择工具"的快捷键，现在让给"放物品"。放置是高频
+            // 操作（摆一排零件），选择工具是低频的（直接点工具栏）。
+            // 选择工具改绑到反引号。
+            if in_game && i.key_pressed(egui::Key::Q) {
+                self.place_item(false);
+            }
+            if in_game && i.key_pressed(egui::Key::E) {
+                self.place_item(true);
             }
             if i.key_pressed(egui::Key::Tab) && self.screen == ui::Screen::InGame {
                 self.inspect = !self.inspect;

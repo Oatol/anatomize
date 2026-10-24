@@ -16,7 +16,7 @@
 
 use egui::RichText;
 
-use super::{CARD_BG, CARD_HOVER, DIM, FAINT, INK, PANEL_BG};
+use super::{CARD_BG, CARD_HOVER, CARD_PICKED, DIM, FAINT, INK, PANEL_BG};
 use crate::App;
 use crate::icons;
 use crate::view::c32;
@@ -109,8 +109,10 @@ fn grid(ui: &mut egui::Ui, app: &mut App) {
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 for def in &items {
-                    if card(ui, def).clicked() {
-                        app.spawn_at_cursor(&def.id);
+                    let picked = app.picked_item().is_some_and(|p| p.id == def.id);
+                    if card(ui, def, picked).clicked() {
+                        // **只选中，不生成**。放置交给 Q / E（见 `place_item`）。
+                        app.item_pick = app.sim.catalog.items.iter().position(|d| d.id == def.id);
                     }
                 }
             });
@@ -129,14 +131,25 @@ fn grid(ui: &mut egui::Ui, app: &mut App) {
 }
 
 /// 一张物品卡片：形状图标 + 名字 + 质量。
-fn card(ui: &mut egui::Ui, def: &anatomize_sim::ItemDef) -> egui::Response {
+fn card(ui: &mut egui::Ui, def: &anatomize_sim::ItemDef, picked: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(88.0, 74.0), egui::Sense::click());
     let p = ui.painter();
-    p.rect_filled(
-        rect,
-        5.0,
-        c32(if resp.hovered() { CARD_HOVER } else { CARD_BG }),
-    );
+    let bg = if picked {
+        CARD_PICKED
+    } else if resp.hovered() {
+        CARD_HOVER
+    } else {
+        CARD_BG
+    };
+    p.rect_filled(rect, 5.0, c32(bg));
+    if picked {
+        p.rect_stroke(
+            rect,
+            5.0,
+            egui::Stroke::new(1.4_f32, c32([240, 200, 120, 255])),
+            egui::StrokeKind::Inside,
+        );
+    }
     icons::item_icon(
         p,
         egui::Rect::from_min_size(rect.min + egui::vec2(26.0, 6.0), egui::vec2(36.0, 36.0)),
@@ -156,7 +169,10 @@ fn card(ui: &mut egui::Ui, def: &anatomize_sim::ItemDef) -> egui::Response {
         egui::FontId::proportional(9.0),
         c32(FAINT),
     );
-    resp.on_hover_text(format!("{}\n{}", def.name, def.desc))
+    resp.on_hover_text(format!(
+        "{}\n{}\n\n点一下选中，然后\n  Q 放在光标处\n  E 镜像放置",
+        def.name, def.desc
+    ))
 }
 
 /// 底部操作。

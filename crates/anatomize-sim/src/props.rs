@@ -22,6 +22,16 @@ impl Sim {
     /// 超出世界边界会被夹回去——沙盒里"点了一下没反应"比"生成了但看不见"
     /// 更让人困惑。
     pub fn spawn_item(&mut self, def: &ItemDef, at: Vec2) -> PieceId {
+        self.spawn_item_oriented(def, at, false)
+    }
+
+    /// 同上，可以**左右镜像**（Q 放、E 镜像放）。
+    ///
+    /// 镜像不是"把刚体旋转 180°"——那是上下颠倒。是**多边形顶点 x 取反**。
+    /// 注意取反会翻转绕向（逆时针变顺时针），所以还要把顶点顺序倒过来，
+    /// 否则 `convex_hull` 会给出一个绕向相反的多边形，物理上不报错但渲染
+    /// 的描边和法线全反。
+    pub fn spawn_item_oriented(&mut self, def: &ItemDef, at: Vec2, mirror: bool) -> PieceId {
         let hw = self.world.half_w();
         let margin = 0.35;
         let at = Vec2::new(
@@ -29,7 +39,13 @@ impl Sim {
             at.y.clamp(0.1, self.world.height - margin),
         );
 
-        let polygon = def.shape.polygon();
+        let mut polygon = def.shape.polygon();
+        if mirror {
+            for v in polygon.iter_mut() {
+                v.x = -v.x;
+            }
+            polygon.reverse();
+        }
         let area_cm2 = anatomize_core::polygon_area(&polygon).abs().max(1.0);
 
         let rb = RigidBodyBuilder::dynamic()
@@ -81,6 +97,17 @@ impl Sim {
     pub fn spawn_item_by_id(&mut self, id: &str, at: Vec2) -> Option<PieceId> {
         let def = self.catalog.get(id)?.clone();
         Some(self.spawn_item(&def, at))
+    }
+
+    /// 按 id 生成，可以镜像。
+    pub fn spawn_item_by_id_oriented(
+        &mut self,
+        id: &str,
+        at: Vec2,
+        mirror: bool,
+    ) -> Option<PieceId> {
+        let def = self.catalog.get(id)?.clone();
+        Some(self.spawn_item_oriented(&def, at, mirror))
     }
 
     /// 这块是不是道具（不是身体的一部分）。

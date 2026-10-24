@@ -49,6 +49,8 @@ pub const WARN: [u8; 4] = [240, 190, 110, 255];
 pub const PANEL_BG: [u8; 4] = [24, 23, 30, 255];
 pub const CARD_BG: [u8; 4] = [32, 31, 40, 255];
 pub const CARD_HOVER: [u8; 4] = [46, 44, 56, 255];
+/// 已选中的物品卡片：暖色调，和工具栏的"选中"一致。
+pub const CARD_PICKED: [u8; 4] = [66, 50, 40, 255];
 
 /// 新建 / 世界设置对话框的状态。
 #[derive(Default)]

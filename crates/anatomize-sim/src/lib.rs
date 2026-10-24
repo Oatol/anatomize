@@ -8,16 +8,16 @@
 pub mod actions;
 pub mod connect;
 pub mod edit;
-pub mod items;
 pub mod fracture;
 pub mod grab;
+pub mod items;
 pub mod props;
 pub mod rewind;
 pub mod save;
 pub mod sever;
 
-pub use fracture::{FractureConfig, SliceReport};
 pub use connect::{Conn, ConnKind};
+pub use fracture::{FractureConfig, SliceReport};
 pub use grab::Grab;
 pub use items::{Category, ItemCatalog, ItemDef, Shape};
 pub use rewind::{Rewind, Snapshot};
@@ -320,10 +320,25 @@ pub struct Sim {
 pub struct Posture {
     /// 每个关节的目标角（弧度），按 `body.joints` 的顺序。
     pub targets: Vec<f32>,
-    /// 刚度（N·m/rad）。
+    /// 全局刚度**倍率**。真正的刚度在 `BodyPlan` 的每条关节上
+    /// （髋 1500、膝 1200、肘 400 …）。这里是整体缩放：1.0 = 按解剖值。
     pub stiffness: f32,
-    /// 阻尼（N·m·s/rad）。
+    /// 全局阻尼倍率。同上。
     pub damping: f32,
+    /// 平衡辅助的强度（0 = 关）。
+    ///
+    /// # 为什么不是"把刚度调大"
+    ///
+    /// 试过：刚度 26 → 600 → 1500。**越大越糟**——1500 的时候骨盆角速度抖到
+    /// 359 rad/s，人直接翻过去。因为 PD 是显式积分，刚度上去之后
+    /// `k·dt²/I > 1`，每一步都过冲。
+    ///
+    /// 而且方向就不对：站起来需要的是**绕地面接触点**的力矩，而 PD 施加的是
+    /// 绕**关节**的力矩。关节再硬，脚下没有踝关节，整个人还是一根倒立摆。
+    ///
+    /// 所以平衡单独做：看质心投影落在两脚之间没有，偏了就在骨盆上推一把。
+    /// 这是真的"重心修正"，不是硬顶。
+    pub balance: f32,
 }
 
 impl Posture {
@@ -334,8 +349,23 @@ impl Posture {
             .collect();
         Self {
             targets,
-            stiffness: 26.0,
-            damping: 3.2,
+            stiffness: 0.5,
+            damping: 0.5,
+            balance: 1.0,
+        }
+    }
+
+    /// 站姿：目标角全 0（= 装配姿态），平衡辅助开满。
+    ///
+    /// 和 `holding` 的区别：`holding` 是"保持现在这个样子"（可能是躺着的），
+    /// 这个是"站直"。刚生成的时候必须用这个——用 `holding` 的话，
+    /// 装配姿态下沉 9cm 之后再取目标，人就定在了一个含胸驼背的姿势上。
+    pub fn standing(sim: &Sim) -> Self {
+        Self {
+            targets: vec![0.0; sim.body.joints.len()],
+            stiffness: 0.5,
+            damping: 0.5,
+            balance: 1.0,
         }
     }
 }
@@ -388,7 +418,10 @@ impl Sim {
         for sx in [-1.0f32, 1.0] {
             physics.colliders.insert(
                 ColliderBuilder::cuboid(0.05, world.height * 0.5 + 1.0)
-                    .translation(RVec2::new(sx * (world.half_w() + 0.05), ground_y + world.height * 0.5))
+                    .translation(RVec2::new(
+                        sx * (world.half_w() + 0.05),
+                        ground_y + world.height * 0.5,
+                    ))
                     .friction(0.6)
                     .build(),
             );
@@ -574,7 +607,8 @@ impl Sim {
     }
 
     pub fn step(&mut self) {
-        self.apply_grab();
+        self.check_grab();
+        self.apply_balance();
         self.apply_posture();
         self.physics.step();
         // 载荷必须在刚解完的这一步读，否则读到的是上一帧的约束冲量
@@ -662,9 +696,42 @@ impl Sim {
         self.posture = Some(Posture::holding(self));
     }
 
+    /// 站起来：目标 = 装配姿态 + 平衡辅助。
+    pub fn stand(&mut self) {
+        self.posture = Some(Posture::standing(self));
+    }
+
+    /// 重新取目标角 = 现在这个样子。落地稳定之后调一次，
+    /// 免得 PD 一直追一个"还没下沉"的目标。
+    pub fn retarget_posture(&mut self) {
+        let n = self.body.joints.len();
+        let angles: Vec<f32> = (0..n).map(|i| self.joint_load(i).angle).collect();
+        if let Some(p) = self.posture.as_mut() {
+            for (t, a) in p.targets.iter_mut().zip(angles) {
+                *t = a;
+            }
+        }
+    }
+
     /// 关掉姿态控制，回到全软 ragdoll。
+    ///
+    /// **必须把电机关掉**：电机是挂在关节上的约束，`posture = None` 只是
+    /// 不再更新它，电机还在按上一次的刚度出力。不关的话"关掉姿态控制"
+    /// 等于没关——M5 的锤击测试就是这么暴露出来的：锤了五下关节纹丝不动。
     pub fn disable_posture(&mut self) {
         self.posture = None;
+        self.clear_joint_motors();
+    }
+
+    /// 把每条关节的电机制动力归零。
+    fn clear_joint_motors(&mut self) {
+        let handles: Vec<_> = self.body.joints.iter().map(|j| j.handle).collect();
+        for h in handles {
+            if let Some(j) = self.physics.impulse_joints.get_mut(h, true) {
+                j.data.set_motor_max_force(JointAxis::AngX, 0.0);
+                j.data.set_motor_position(JointAxis::AngX, 0.0, 0.0, 0.0);
+            }
+        }
     }
 
     /// 设置某个关节的目标角（弧度）。名字不存在时返回 false。
@@ -689,52 +756,151 @@ impl Sim {
         b.consciousness * (0.3 + 0.7 * b.sympathetic_tone)
     }
 
-    /// 把姿态控制变成力矩。**必须在 `physics.step()` 之前调**。
+    /// 平衡辅助：把质心的水平投影拉回两脚之间。
+    ///
+    /// # 为什么需要它
+    ///
+    /// 这具身体**没有踝关节**（`human_01` 只有髋、膝）。没有踝，站着就是一根
+    /// 倒立摆：质心只要偏出支撑面一点点，重力矩就会把它越推越远。
+    /// 关节 PD 帮不上——它施加的是绕关节的力矩，而站起来需要的是绕**地面
+    /// 接触点**的力矩。
+    ///
+    /// 所以这里做的是最朴素的重心修正：算质心、算两脚中点，偏了就在骨盆上
+    /// 推一把。推的是**水平力**，不是力矩——和真人靠踝/髋策略站住是同一个
+    /// 思路，只是我们把它外置了。
+    ///
+    /// 三条边界：
+    ///
+    /// 1. 只在**站着**的时候生效（质心高于地面 0.35 m）。躺下、被拎起来、
+    ///    被炸飞的时候不管——那时候"平衡"没有意义。
+    /// 2. 力有上限（体重的 40%）。所以用力推还是会倒，只是不会一碰就倒。
+    /// 3. 只修水平方向。垂直方向交给物理。
+    fn apply_balance(&mut self) {
+        let Some(p) = &self.posture else { return };
+        if p.balance <= 0.0 {
+            return;
+        }
+        let strength = p.balance;
+
+        // 质心 + 支撑点
+        let mut com = Vec2::ZERO;
+        let mut total_m = 0.0f32;
+        let mut feet_x = 0.0f32;
+        let mut feet_n = 0.0f32;
+        let mut lowest = f32::INFINITY;
+        for i in 0..self.body.pieces.len() {
+            let piece = &self.body.pieces[i];
+            if piece.deleted {
+                continue;
+            }
+            let (pos, _) = self.piece_pose(PieceId(i as u32));
+            let m = piece.mass.max(1e-4);
+            com += pos * m;
+            total_m += m;
+            lowest = lowest.min(pos.y);
+        }
+        if total_m <= 0.0 {
+            return;
+        }
+        com /= total_m;
+
+        // 支撑点 = 最低的那两块（两只脚）的水平中点
+        for i in 0..self.body.pieces.len() {
+            let piece = &self.body.pieces[i];
+            if piece.deleted {
+                continue;
+            }
+            let (pos, _) = self.piece_pose(PieceId(i as u32));
+            if pos.y < lowest + 0.12 {
+                feet_x += pos.x;
+                feet_n += 1.0;
+            }
+        }
+        if feet_n < 1.0 {
+            return;
+        }
+        let support = feet_x / feet_n;
+
+        // 站着才管
+        if com.y - self.ground_y < 0.35 {
+            return;
+        }
+
+        // 质心速度（用骨盆近似就够——这一项只是阻尼）
+        let pelvis = self.body.primary.first().copied();
+        let Some(pelvis) = pelvis else { return };
+        let vx = self.piece_velocity(pelvis).x;
+
+        let err = com.x - support;
+        // kp = 25 /s²、kd = 9 /s。70kg 的人偏 5cm → 87 N，约体重的 13%。
+        let mut f = -(err * 25.0 + vx * 9.0) * total_m * strength;
+        let max_f = total_m * 9.8 * 0.4;
+        f = f.clamp(-max_f, max_f);
+
+        let Some(rb) = self
+            .physics
+            .bodies
+            .get_mut(self.body.pieces[pelvis.index()].body)
+        else {
+            return;
+        };
+        rb.add_force(rv(Vec2::new(f, 0.0)), true);
+    }
+
+    /// 把姿态控制变成**关节电机**。必须在 `physics.step()` 之前调。
+    ///
+    /// # 为什么不是"给两块各加一个反向力矩"
+    ///
+    /// M5 里就是这么写的：`τ = k·err − c·dw`，然后 `add_torque` 给两端。
+    /// 问题出在 `k` 上。`assets/body_plans/human_01.ron` 给每条关节都写了
+    /// 刚度（髋 1500、膝 1200、腰 1200、肘 400），但那些数**从来没被读过**——
+    /// 姿态控制用的是全局的 26。
+    ///
+    /// 26 N·m/rad 是什么概念：70kg 的人站着，髋要扛 `m·g·d ≈ 40·9.8·0.05
+    /// = 20 N·m`，26 的刚度需要 **0.77 弧度（44°）**的误差才够。所以人站不住，
+    /// 会慢慢跪下去。而把 26 直接改成 1500 又会炸：显式积分的稳定条件是
+    /// `ω·dt < 2`，`ω = √(k/I) = √(1500/0.4) ≈ 61 rad/s`，`61/60 ≈ 1.0`——
+    /// 一步就过冲，两步发散。实测骨盆角速度抖到 372 rad/s。
+    ///
+    /// # 所以改用 rapier 的关节电机
+    ///
+    /// 电机是**隐式约束**：它和关节限位、接触力进同一个求解器，刚度多高都稳。
+    /// 而且 plan 里那些刚度值本来就是为这个准备的（单位 N·m/rad）。
+    ///
+    /// `muscle_tone` 依然乘在刚度上——昏迷 → 0 就是"电机断电"，人会软下去；
+    /// 关节疼 → `guard` 把那条关节的刚度压到 15%，就是"护着不敢用力"。
     fn apply_posture(&mut self) {
         let Some(p) = &self.posture else { return };
         let tone = self.muscle_tone();
-        let stiff = p.stiffness * tone;
-        let damp = p.damping * (0.4 + 0.6 * tone);
+        let k_scale = p.stiffness * tone;
+        let d_scale = p.damping * (0.4 + 0.6 * tone);
 
         for i in 0..self.body.joints.len() {
-            let (a, b) = (self.body.joints[i].a, self.body.joints[i].b);
-            // 先把要用的量抄出来，避免 `&self.body` 和 `&mut self.physics` 打架
-            let (ba, bb, mass_a, mass_b, pain) = {
-                let pa = &self.body.pieces[a.index()];
-                let pb = &self.body.pieces[b.index()];
-                (pa.body, pb.body, pa.mass, pb.mass, self.body.joints[i].health.pain)
-            };
-            // 冻结 / 删除的块没有刚体，这条关节这一帧不发力
-            let (Some(rb_a), Some(rb_b)) =
-                (self.physics.bodies.get(ba), self.physics.bodies.get(bb))
-            else {
+            let j = &self.body.joints[i];
+            // 脱位 / 离断的关节没有硬约束了（`handle` 失效），这一帧不发力
+            let Some(spec) = self.plan.joints.get(j.id.index()) else {
                 continue;
             };
-            let (wa, wb) = (rb_a.angvel(), rb_b.angvel());
+            let guard = 1.0 - 0.85 * j.health.pain;
+            let k = spec.stiffness * k_scale * guard;
+            let d = spec.damping * d_scale * guard;
+            let target = p.targets[i];
+            let handle = j.handle;
 
-            // 疼的关节主动放弃发力：`pain = 1` 时只剩 15% 的力矩
-            let guard = 1.0 - 0.85 * pain;
-            let load = self.joint_load(i);
-            let err = p.targets[i] - load.angle;
-            let dw = wb - wa;
-            // 死区：误差和角速度都很小的时候不出力。
-            //
-            // 没有死区的话，PD 会一直追着浮点级别的残差推，而关节限位一直在
-            // 往回拉 —— 两边对推的结果就是静止的 ragdoll 肉眼可见地抖。
-            if err.abs() < 0.010 && dw.abs() < 0.06 {
+            let Some(joint) = self.physics.impulse_joints.get_mut(handle, true) else {
                 continue;
-            }
-            // **按质量缩放**：刚度 26 对 9kg 的大腿合适，对 0.2kg 的碎片
-            // 就是 130 rad/s² —— 切下来的小角会被 PD 直接甩飞。
-            // 取两端质量的较小值，低于 4kg 开始等比衰减。
-            let m = mass_a.min(mass_b);
-            let scale = (m / 4.0).clamp(0.04, 1.0);
-            let tau = (stiff * err - damp * dw) * guard * scale;
-            if !tau.is_finite() {
-                continue;
-            }
-            self.physics.bodies[ba].add_torque(-tau, true);
-            self.physics.bodies[bb].add_torque(tau, true);
+            };
+            joint
+                .data
+                .set_motor_model(JointAxis::AngX, MotorModel::ForceBased);
+            joint
+                .data
+                .set_motor_position(JointAxis::AngX, target, k.max(1.0), d.max(0.5));
+            // 力矩上限：刚度 × 0.35 弧度（20°）——够扛住体重，又不至于
+            // 把一条卡死的关节变成液压钳。
+            joint
+                .data
+                .set_motor_max_force(JointAxis::AngX, (k * 0.35).max(20.0));
         }
     }
 
@@ -821,8 +987,12 @@ impl Sim {
         // 冻结的块已经从物理世界摘掉了，但关节还记着它。离断之后这条关节
         // 本来也没有载荷可言，直接返回零比到处判空干净。
         let (Some(rb_a), Some(rb_b)) = (
-            self.physics.bodies.get(self.body.pieces[inst.a.index()].body),
-            self.physics.bodies.get(self.body.pieces[inst.b.index()].body),
+            self.physics
+                .bodies
+                .get(self.body.pieces[inst.a.index()].body),
+            self.physics
+                .bodies
+                .get(self.body.pieces[inst.b.index()].body),
         ) else {
             return JointLoad {
                 angle: 0.0,
@@ -1021,13 +1191,16 @@ impl Sim {
         let id = self.body.primary[i];
         let piece = &self.body.pieces[id.index()];
         let (pos, rot) = self.piece_pose(id);
-        let w = Rot2::from_angle(rot) * rv((self.plan.parts[i].offset - piece.centroid) * CM)
-            + rv(pos);
+        let w =
+            Rot2::from_angle(rot) * rv((self.plan.parts[i].offset - piece.centroid) * CM) + rv(pos);
         Some(Vec2::new(w.x, w.y))
     }
 
     /// 世界坐标下的刀 → 身体局部厘米。交互层只需要这一个入口。
-    pub fn cut_to_body(&self, cut: &anatomize_cut::CutSegment) -> Option<anatomize_cut::CutSegment> {
+    pub fn cut_to_body(
+        &self,
+        cut: &anatomize_cut::CutSegment,
+    ) -> Option<anatomize_cut::CutSegment> {
         let o = self.body_origin_world()?;
         let i = self.plan.parts.iter().position(|p| p.name == "pelvis")?;
         let (_, rot) = self.piece_pose(self.body.primary[i]);
@@ -1052,7 +1225,11 @@ impl Sim {
     /// 部件在世界坐标下的朝向（弧度）。
     pub fn part_angle(&self, part: &str) -> Option<f32> {
         let p = self.plan.parts.iter().position(|p| p.name == part)?;
-        Some(self.physics.bodies[self.body.parts[p].body].rotation().angle())
+        Some(
+            self.physics.bodies[self.body.parts[p].body]
+                .rotation()
+                .angle(),
+        )
     }
 
     /// 部件在世界坐标下的质心位置（米）。

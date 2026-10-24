@@ -246,24 +246,27 @@ fn posture_trial(injure: bool) -> Trial {
     let knee_l = sim.joint_index("knee_l").unwrap();
     let knee_r = sim.joint_index("knee_r").unwrap();
 
-    sim.enable_posture();
-    for _ in 0..240 {
-        sim.step();
-    }
-    // 健康时的目标姿势。受伤之后再套回同一个目标，才看得出"拉不住了"。
-    let healthy = sim.posture.as_ref().unwrap().targets.clone();
-
+    // **先打，再开姿态控制。**
+    //
+    // 顺序很重要：带着姿态控制打不出伤（关节电机是隐式约束，比锤子的
+    // 角冲量硬），所以必须在"纯 ragdoll"状态下锤。M5 原来是在
+    // `disable_posture()` 之后锤——那也能用，但电机是挂在关节上的约束，
+    // 关掉姿态控制必须同时把电机力归零（`disable_posture` 现在会做）。
     if injure {
-        // 锤击时必须关掉姿态控制：带着主动力矩，关节根本过不了伸，也就打不伤。
-        // 这不是取巧——一记硬击的角冲量（14 N·m·s）远大于肌张力给得出的力矩。
-        sim.disable_posture();
         for _ in 0..5 {
             hammer_knee(&mut sim);
         }
-        sim.enable_posture();
-        sim.posture.as_mut().unwrap().targets = healthy;
     }
 
+    // 两个组用**同一套目标**：装配姿态（全 0）。
+    //
+    // 不用"当前姿态"当目标（`Posture::holding`）——那样受伤组的基线会被
+    // 伤腿带歪，A/B 就不成立了。这里要问的是"同一个目标，哪条腿跟得上"。
+    sim.stand();
+    if let Some(p) = sim.posture.as_mut() {
+        // 这具身体吊在 y=40 的半空，平衡辅助会把它横着推走——测试里关掉。
+        p.balance = 0.0;
+    }
     for _ in 0..240 {
         sim.step();
     }
