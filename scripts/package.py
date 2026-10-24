@@ -116,12 +116,20 @@ def main() -> None:
 
 可执行文件
 --------------------------------------------------
+  p05_demo.exe    5 秒回溯 + 参数扫描      -> docs/p05_rewind_scan.png
   m6_demo.exe     断面分层 + 碎片 + 监护仪  -> docs/m6_section_hud.png
   m5_demo.exe     冷、饿、疼               -> docs/m5_cold_food_pain.png
   m4_demo.exe     失血闭环                 -> docs/m4_hemorrhage.png
   m3_demo.exe     关节状态机 + 断供        -> docs/m3-*.png
   cut_demo.exe    多边形切割
   tissue_demo.exe 组织场四个通道
+  ragdoll.exe     M0 的 ragdoll 落地
+  scan.exe        批量参数实验（CSV 输出）
+
+批量实验
+--------------------------------------------------
+  scan.exe --scenario bleed-femoral --param tone_max=0.3:1.0:0.175 --fast
+  scan.exe --help
 
 用法
 --------------------------------------------------
