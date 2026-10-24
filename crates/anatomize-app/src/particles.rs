@@ -87,8 +87,8 @@ impl Particles {
             let at = a + (b - a) * t;
             let side = if self.rand() < 0.5 { 1.0 } else { -1.0 };
             let jitter = (self.rand() - 0.5) * 0.9;
-            let v = dir * side * (0.5 + self.rand() * 1.6)
-                + Vec2::new(jitter, 0.4 + self.rand() * 1.2);
+            let v =
+                dir * side * (0.5 + self.rand() * 1.6) + Vec2::new(jitter, 0.4 + self.rand() * 1.2);
             let life = 0.35 + self.rand() * 0.7;
             let size = 0.006 + self.rand() * 0.010;
             let vel = v * (0.6 + len * 0.4);
@@ -130,10 +130,7 @@ impl Particles {
         // 每秒 `amount` 颗，按 dt 累积
         let n = (amount * dt * 22.0) as usize;
         for _ in 0..n.min(3) {
-            let j = Vec2::new(
-                (self.rand() - 0.5) * 0.02,
-                (self.rand() - 0.5) * 0.02,
-            );
+            let j = Vec2::new((self.rand() - 0.5) * 0.02, (self.rand() - 0.5) * 0.02);
             let life = 0.5 + self.rand() * 0.8;
             let vx = (self.rand() - 0.5) * 0.25;
             let vy = -0.15 - self.rand() * 0.4;
@@ -189,11 +186,7 @@ impl Particles {
             let s = cam.to_screen(p.pos, view);
             let a = (p.life / p.max_life).clamp(0.0, 1.0);
             let alpha = if p.settled { 120 } else { (a * 235.0) as u8 };
-            painter.circle_filled(
-                s,
-                cam.px(p.size).max(1.0),
-                c32a(p.color, alpha),
-            );
+            painter.circle_filled(s, cam.px(p.size).max(1.0), c32a(p.color, alpha));
         }
     }
 }

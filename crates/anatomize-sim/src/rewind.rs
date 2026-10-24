@@ -70,6 +70,8 @@ pub struct Snapshot {
     pub pieces: Vec<PieceSave>,
     pub primary: Vec<u32>,
     pub joints: Vec<JointSave>,
+    /// 玩家连接。快照不带的话，回滚 5 秒会把刚搭好的机器拆散。
+    pub conns: Vec<crate::save::ConnSave>,
     pub bus: PhysioBus,
     pub ambient_c: f32,
     pub tissue: Option<TissueSnapshot>,
@@ -81,7 +83,7 @@ impl Snapshot {
     pub fn bytes(&self) -> usize {
         let tissue = self.tissue.as_ref().map_or(0, |t| t.bytes());
         let pieces: usize = self.pieces.iter().map(|p| p.polygon.len() * 8 + 64).sum();
-        tissue + pieces + self.joints.len() * 96 + 256
+        tissue + pieces + self.joints.len() * 96 + self.conns.len() * 64 + 256
     }
 }
 
@@ -226,6 +228,7 @@ impl Sim {
                 rest_limits: j.rest_limits,
                 tether_rest: j.tether_rest,
                 health: j.health,
+                cuttable: j.cuttable,
             })
             .collect();
 
@@ -242,6 +245,21 @@ impl Sim {
         });
 
         Snapshot {
+            conns: self
+                .conns
+                .iter()
+                .filter(|c| !c.broken)
+                .map(|c| crate::save::ConnSave {
+                    kind: c.kind,
+                    a: c.a.0,
+                    b: c.b.map(|b| b.0),
+                    local_a: c.local_a,
+                    local_b: c.local_b,
+                    rest: c.rest,
+                    motor: c.motor,
+                    dir: c.dir,
+                })
+                .collect(),
             tick: self.tick.0,
             pieces,
             primary: self.body.primary.iter().map(|p| p.0).collect(),
@@ -274,6 +292,21 @@ impl Sim {
         }
         self.body.pieces.clear();
         self.body.joints.clear();
+        // 玩家连接也要清：它们指着刚被删掉的刚体
+        for c in std::mem::take(&mut self.conns) {
+            if let Some(h) = c.anchor_body {
+                self.physics.bodies.remove(
+                    h,
+                    &mut self.physics.islands,
+                    &mut self.physics.colliders,
+                    &mut self.physics.impulse_joints,
+                    &mut self.physics.multibody_joints,
+                    &mut self.physics.soft_bodies,
+                    true,
+                );
+            }
+        }
+        self.release_grab();
 
         // 2. 按快照重建块
         for ps in &snap.pieces {
@@ -415,7 +448,34 @@ impl Sim {
                 health: js.health,
                 tether,
                 tether_rest: js.tether_rest,
+                cuttable: js.cuttable,
             });
+        }
+
+        // 3.5 玩家连接：和读档同一条路径（局部锚点 → 世界点 → connect_at）
+        for c in &snap.conns {
+            let a = crate::PieceId(c.a);
+            if a.index() >= self.body.pieces.len() {
+                continue;
+            }
+            let Some(wa) = self.conn_world_point(a, c.local_a) else {
+                continue;
+            };
+            let wb = match c.b {
+                Some(b) => {
+                    let b = crate::PieceId(b);
+                    if b.index() >= self.body.pieces.len() {
+                        continue;
+                    }
+                    self.conn_world_point(b, c.local_b)
+                }
+                None => Some(wa),
+            };
+            let Some(wb) = wb else { continue };
+            if let Some(idx) = self.connect_at(c.kind, a, c.b.map(crate::PieceId), wa, Some(wb)) {
+                self.conns[idx].motor = c.motor;
+                self.conns[idx].dir = c.dir;
+            }
         }
 
         // 4. 生理 + 组织场

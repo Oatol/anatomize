@@ -97,6 +97,9 @@ impl Sim {
         p.deleted = true;
         let body = p.body;
         let frozen = p.is_frozen();
+        // 连着它的玩家连接也要拆——关节指向一个不存在的刚体，
+        // 下一帧求解器就会读到死 handle。
+        self.drop_conns_of(id);
         // 删掉的块要从场里抹掉，不然 F1 热力图还在原位画它
         let (part, poly): (anatomize_core::PartId, Vec<Vec2>) = {
             let p = &self.body.pieces[id.index()];

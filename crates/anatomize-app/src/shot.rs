@@ -48,6 +48,8 @@ pub enum Action {
     Props,
     /// 生成手雷并引爆
     Boom,
+    /// 搭一台小机器：焊接 + 钉住 + 绳 + 活塞
+    Build,
 }
 
 impl ShotPlan {
@@ -70,6 +72,7 @@ impl ShotPlan {
                 "sever" => Some(Action::Sever),
                 "props" => Some(Action::Props),
                 "boom" => Some(Action::Boom),
+                "build" => Some(Action::Build),
                 _ => None,
             });
         Some(Self {

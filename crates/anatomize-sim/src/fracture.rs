@@ -92,6 +92,8 @@ pub struct SliceReport {
     pub skipped: Vec<String>,
     /// 重挂了几条关节。
     pub rewired_joints: usize,
+    /// 因为**全局**每帧切割预算用完了而提前停下（MaD2 的 `cutLimit`）。
+    pub budget_exhausted: bool,
 }
 
 /// 点是否在凸多边形内（含边界）。
@@ -140,6 +142,13 @@ impl Sim {
         if cut.length() < 1e-6 {
             return report;
         }
+        // 全局切割预算（MaD2 的 "Max Cuts / Frame"）。切满就什么都不做——
+        // 这不是优化，是护栏：一刀扫过整具身体会产出十几块，再多求解器
+        // 在一帧里解不完，表现是卡死。
+        if self.cuts_this_frame >= self.cut_limit {
+            report.budget_exhausted = true;
+            return report;
+        }
         self.slices += 1;
 
         // 候选：所有还没冻结的块。冻结的块是背景，不该再被切。
@@ -159,8 +168,13 @@ impl Sim {
             if self.live_pieces() >= self.fracture.max_live_pieces {
                 break;
             }
+            if self.cuts_this_frame >= self.cut_limit {
+                report.budget_exhausted = true;
+                break;
+            }
             if self.slice_piece(pid, cut, &mut report) {
                 report.new_pieces += 1;
+                self.cuts_this_frame += 1;
             }
         }
         report

@@ -64,19 +64,27 @@ def hist(path: Path) -> tuple[dict[tuple[int, int, int], int], int]:
     return c, w * h
 
 
-def diff(a: Path, b: Path) -> float:
+def diff(a: Path, b: Path, world_only: bool = True) -> float:
+    """两张图的逐像素差异比例。
+
+    `world_only` 只比**世界画布**那一段（去掉左右两块 UI 面板）。
+    全图比会被 UI 稀释：面板占了快一半的像素，身体全变了也才 4%。
+    之前拿全图比例当阈值，切开一次从 8% 掉到 4.5% 就误报"切片没生效"——
+    其实世界区域差了 6%，切得好好的。
+    """
     ia = Image.open(a).convert("RGBA")
     ib = Image.open(b).convert("RGBA")
     if ia.size != ib.size:
         sys.exit("两张图尺寸不同")
     w, h = ia.size
+    x0, x1 = (300, w - 62) if world_only else (0, w)
     pa, pb = ia.load(), ib.load()
     n = 0
     for y in range(h):
-        for x in range(w):
+        for x in range(x0, x1):
             if pa[x, y] != pb[x, y]:
                 n += 1
-    return n / (w * h)
+    return n / ((x1 - x0) * h)
 
 
 def main() -> None:
@@ -138,27 +146,57 @@ def main() -> None:
     print("[2/5] 切开 …")
     shoot(exe, cut, "cut")
     d = diff(base, cut)
-    print(f"  和原图差 {d * 100:.2f}%")
-    if d < 0.05:
+    print(f"  世界区域差 {d * 100:.2f}%")
+    if d < 0.03:
         sys.exit(f"切开之后画面几乎没变（{d * 100:.2f}%），切片没生效？")
 
     print("[3/5] 热力图 …")
     shoot(exe, heat, "heat")
     d2 = diff(base, heat)
-    print(f"  和原图差 {d2 * 100:.2f}%")
-    if d2 < 0.01:
+    print(f"  世界区域差 {d2 * 100:.2f}%")
+    if d2 < 0.02:
         sys.exit(f"热力图叠加没生效（{d2 * 100:.2f}%）")
 
     print("[4/5] 道具 …")
     props = out / "app-props.png"
     shoot(exe, props, "props")
     d3 = diff(base, props)
-    print(f"  和原图差 {d3 * 100:.2f}%")
-    if d3 < 0.05:
+    print(f"  世界区域差 {d3 * 100:.2f}%")
+    if d3 < 0.03:
         sys.exit(f"生成道具之后画面几乎没变（{d3 * 100:.2f}%）")
 
-    print("[5/5] 通过")
-    for p in (base, cut, heat, props):
+    print("[5/6] 连接工具 …")
+    build = out / "app-build.png"
+    shoot(exe, build, "build")
+    d4 = diff(base, build)
+    print(f"  世界区域差 {d4 * 100:.2f}%")
+    if d4 < 0.03:
+        sys.exit(f"搭了机器之后画面几乎没变（{d4 * 100:.2f}%）")
+
+    # 五种连接的线色必须都出现（铰链是圆，抗锯齿会把颜色摊开，容差给大一点）
+    im = Image.open(build).convert("RGBA")
+    w, h = im.size
+    px = im.load()
+    want = {
+        "焊接": ((190, 200, 215), 14),
+        "钉住": ((240, 200, 120), 14),
+        "绳": ((200, 180, 130), 14),
+        "活塞": ((230, 150, 110), 14),
+        "铰链": ((140, 210, 230), 40),
+    }
+    for name, (c, tol) in want.items():
+        n = 0
+        for y in range(h):
+            for x in range(w):
+                k = px[x, y][:3]
+                if all(abs(k[i] - c[i]) < tol for i in range(3)):
+                    n += 1
+        print(f"  连接「{name}」{n} px")
+        if n < 20:
+            sys.exit(f"连接「{name}」没画出来（{n} px）")
+
+    print("[6/6] 通过")
+    for p in (base, cut, heat, props, build):
         print(f"  {p.relative_to(ROOT)}")
 
 

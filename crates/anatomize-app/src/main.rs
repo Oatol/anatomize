@@ -27,7 +27,7 @@ mod view;
 use anatomize_body::{ASSET_HUMAN_01, BodyPlan};
 use anatomize_core::{DT, HeatChannel, Vec2};
 use anatomize_cut::CutSegment;
-use anatomize_sim::{PieceId, Sim, WorldBounds};
+use anatomize_sim::{ConnKind, PieceId, Sim, WorldBounds};
 use anatomize_tissue::TissueConfig;
 use camera::Camera;
 use tools::{Drag, Tool};
@@ -71,6 +71,8 @@ pub struct App {
     pub item_category: usize,
     /// 粒子（切割喷血、爆炸碎片）。
     pub particles: particles::Particles,
+    /// 需要点两下的工具，第一次点完挂在这里。
+    pub pending: Option<tools::Pending>,
     /// 现在在哪个界面。
     pub screen: ui::Screen,
     /// 检视窗口开着没有。
@@ -139,7 +141,12 @@ impl App {
             fps: 60.0,
             item_category: 0,
             particles: particles::Particles::default(),
-            screen: if shot_mode { ui::Screen::InGame } else { ui::Screen::MainMenu },
+            pending: None,
+            screen: if shot_mode {
+                ui::Screen::InGame
+            } else {
+                ui::Screen::MainMenu
+            },
             inspect: shot_inspect,
             settings_open: false,
             search: String::new(),
@@ -186,6 +193,13 @@ impl App {
                     width: 0.004,
                     speed: drag.length() * 60.0,
                 };
+                // **先断关节再切形状** —— MaD2 的 Cutter.Cut：
+                //     if(madeby == "cut" || madeby == "scissors") this.CutJoints(seg);
+                //     this.MakeCut(seg);
+                // 顺序很重要：先切形状的话，锚点会被重挂到新的两半上，
+                // 那条"穿过关节"的刀就再也判不出来了。
+                // 只有刀/剪刀会断关节——子弹和激光不会（MaD2 同理）。
+                let severed = self.sim.cut_joints_on(&seg, self.paused);
                 let report = self.sim.slice(&seg);
                 let out = self.sim.cut(&seg);
 
@@ -198,13 +212,25 @@ impl App {
                     self.particles.cut(seg.a, seg.b, normal, bleed.max(2.0));
                 }
                 let mut msg = String::new();
+                if let Some(name) = &severed {
+                    msg.push_str(&format!("切断{name}"));
+                }
                 if report.new_pieces > 0 {
+                    if !msg.is_empty() {
+                        msg.push('，');
+                    }
                     msg.push_str(&format!("切开 {} 块", report.new_pieces));
+                }
+                if report.budget_exhausted {
+                    if !msg.is_empty() {
+                        msg.push('，');
+                    }
+                    msg.push_str("切到上限了");
                 }
                 if let Some(o) = out {
                     if !o.report.hits.is_empty() {
                         if !msg.is_empty() {
-                            msg.push_str("，");
+                            msg.push('，');
                         }
                         msg.push_str(&o.report.summary(&self.sim.plan));
                     }
@@ -232,8 +258,11 @@ impl App {
                     }
                 }
             }
-            Tool::Hand | Tool::Select => {
-                // 选择：点一下看属性
+            Tool::Hand => {
+                // 松手就放开。抓取本身在按下时已经建好了（见 world_view）。
+                self.sim.release_grab();
+            }
+            Tool::Select => {
                 self.selected = self.piece_at(drag.from).map(|i| PieceId(i as u32));
             }
             Tool::Freeze => {
@@ -249,6 +278,99 @@ impl App {
                     self.sim.delete_piece(PieceId(i as u32));
                     self.selected = None;
                     self.say("已删除");
+                }
+            }
+            Tool::Weld | Tool::Rope | Tool::Hinge | Tool::Piston => {
+                // 活塞工具点在**已有的活塞**上 = 切换伸出/收回/停。
+                // 这是 MaD2 的 `TRIGGER` 工具的简化版：不用再切一个工具。
+                if self.tool == Tool::Piston
+                    && self.pending.is_none()
+                    && let Some(idx) = self.sim.conn_near(drag.from, 0.05)
+                    && let Some(msg) = self.sim.toggle_piston(idx)
+                {
+                    self.say(msg);
+                    return;
+                }
+                let Some(i) = self.piece_at(drag.from) else {
+                    self.pending = None;
+                    self.say("点在一块上才算");
+                    return;
+                };
+                let at = drag.from;
+                // 第一下：记住这块和点位
+                let Some(first) = self.pending else {
+                    self.pending = Some(tools::Pending { piece: i, at });
+                    self.say(format!("{}：再点第二块", self.tool.name()));
+                    return;
+                };
+                self.pending = None;
+                if first.piece == i {
+                    self.say("不能连自己");
+                    return;
+                }
+                let kind = match self.tool {
+                    Tool::Weld => ConnKind::Weld,
+                    Tool::Rope => ConnKind::Rope,
+                    Tool::Hinge => ConnKind::Hinge,
+                    _ => ConnKind::Piston,
+                };
+                // 关节放在两次点击的中点——那是玩家心里"连接处"的位置。
+                // 只有绳例外：两端各挂在**自己那一下点的地方**，不然锚点重合，
+                // 绳长就是 0，两块会被焊在一起。
+                let mid = (first.at + at) * 0.5;
+                let res = if kind == ConnKind::Rope {
+                    self.sim.connect_at(
+                        kind,
+                        PieceId(first.piece as u32),
+                        Some(PieceId(i as u32)),
+                        first.at,
+                        Some(at),
+                    )
+                } else {
+                    self.sim.connect(
+                        kind,
+                        PieceId(first.piece as u32),
+                        Some(PieceId(i as u32)),
+                        mid,
+                    )
+                };
+                match res {
+                    Some(_) => {
+                        let name = self.tool.name();
+                        self.say(format!("{name}好了"));
+                    }
+                    None => self.say("连不上（可能冻住了）"),
+                }
+            }
+            Tool::Pin => {
+                let Some(i) = self.piece_at(drag.from) else {
+                    self.say("点在块上");
+                    return;
+                };
+                match self
+                    .sim
+                    .connect(ConnKind::Pin, PieceId(i as u32), None, drag.from)
+                {
+                    Some(_) => self.say("钉住了"),
+                    None => self.say("钉不上（可能冻住了）"),
+                }
+            }
+            Tool::Launch => {
+                let Some(i) = self.piece_at(drag.from) else {
+                    return;
+                };
+                let id = PieceId(i as u32);
+                let dir = (drag.to - drag.from).normalize_or_zero();
+                let dir = if dir.length() < 1e-3 {
+                    Vec2::new(0.0, 1.0)
+                } else {
+                    dir
+                };
+                if self.sim.strike_piece(id, dir * 260.0, drag.from) {
+                    let what = self.piece_label(id);
+                    self.say(format!("把{what}甩出去了"));
+                } else {
+                    self.say("这块动不了");
                 }
             }
         }
@@ -273,9 +395,9 @@ impl App {
 
     /// 手工具：把抓住的那块往鼠标处拉。
     fn drag_piece(&mut self, world: Vec2) {
-        let Some(d) = &self.drag else { return };
-        let Some(i) = d.grabbed else { return };
-        self.sim.pull_piece(PieceId(i as u32), world, 1.0);
+        // 只更新目标点。力由 `Sim::step` 每物理步施加在**抓取点**上——
+        // 力偏离质心才有力矩，抓一只手拖身体才会翻。见 `sim/grab.rs`。
+        self.sim.drag_to(world);
     }
 }
 
@@ -356,6 +478,62 @@ impl App {
                 self.sim.sever_joint("knee_l");
                 self.sim.sever_joint("hip_r");
             }
+            shot::Action::Build => {
+                // 一台"天平"：钉住一块当支点，焊一根长板当臂，两头挂东西。
+                // 顺便演示绳和活塞——四种连接都在一张图上。
+                let c = self.cam.center;
+                let base = c + Vec2::new(0.0, -0.2);
+                if let Some(arm) = self
+                    .sim
+                    .spawn_item_by_id("plank", base + Vec2::new(0.0, 0.3))
+                {
+                    // 钉住长板中点 = 支点
+                    self.sim
+                        .connect(ConnKind::Pin, arm, None, base + Vec2::new(0.0, 0.3));
+                    // 左端焊一个铁球
+                    if let Some(ball) = self
+                        .sim
+                        .spawn_item_by_id("ball", base + Vec2::new(-0.85, 0.3))
+                    {
+                        let at = base + Vec2::new(-0.85, 0.3);
+                        self.sim.connect(ConnKind::Weld, arm, Some(ball), at);
+                    }
+                    // 右端挂一个木箱，用绳
+                    if let Some(crate_) = self
+                        .sim
+                        .spawn_item_by_id("crate", base + Vec2::new(0.9, -0.1))
+                    {
+                        self.sim.connect_at(
+                            ConnKind::Rope,
+                            arm,
+                            Some(crate_),
+                            base + Vec2::new(0.85, 0.3),
+                            Some(base + Vec2::new(0.9, -0.05)),
+                        );
+                    }
+                }
+                // 右边再挂一个铰链：一块长板 + 一个木箱，能相对摆动
+                if let Some(h1) = self.sim.spawn_item_by_id("plank", c + Vec2::new(1.5, 0.6))
+                    && let Some(h2) = self.sim.spawn_item_by_id("crate", c + Vec2::new(1.5, 0.15))
+                {
+                    let at = c + Vec2::new(1.5, 0.4);
+                    self.sim.connect(ConnKind::Hinge, h1, Some(h2), at);
+                }
+                // 地面上装一个活塞，把两块水泥块撑开
+                if let Some(a) = self
+                    .sim
+                    .spawn_item_by_id("block", c + Vec2::new(-1.4, -0.55))
+                    && let Some(b) = self
+                        .sim
+                        .spawn_item_by_id("block", c + Vec2::new(-1.0, -0.55))
+                {
+                    let at = c + Vec2::new(-1.2, -0.55);
+                    if let Some(i) = self.sim.connect(ConnKind::Piston, a, Some(b), at) {
+                        self.sim.toggle_piston(i);
+                    }
+                }
+                self.selected = None;
+            }
             shot::Action::Boom => {
                 let c = self.cam.center;
                 // 先摆几个箱子，炸了才看得出冲击波
@@ -366,7 +544,10 @@ impl App {
                 ] {
                     self.sim.spawn_item_by_id("crate", c + off);
                 }
-                if let Some(g) = self.sim.spawn_item_by_id("grenade", c + Vec2::new(0.0, -0.1)) {
+                if let Some(g) = self
+                    .sim
+                    .spawn_item_by_id("grenade", c + Vec2::new(0.0, -0.1))
+                {
                     self.sim.detonate(g, 1.8, 160.0);
                 }
             }
@@ -558,83 +739,84 @@ impl App {
 /// 从 `update` 里抽出来的——它现在要挂在一个 `CentralPanel` 上，
 /// 而那个 panel 由 `ui::layout` 决定什么时候开。
 pub fn world_view(ui: &mut egui::Ui, app: &mut App) {
+    let (resp, painter) = ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
+    let view_rect = resp.rect;
 
-            let (resp, painter) =
-                ui.allocate_painter(ui.available_size(), egui::Sense::click_and_drag());
-            let view_rect = resp.rect;
+    // ---- 相机 ----
+    let hover = ui.ctx().input(|i| i.pointer.hover_pos());
+    if let Some(p) = hover
+        && view_rect.contains(p)
+    {
+        let scroll = ui.ctx().input(|i| i.raw_scroll_delta.y);
+        if scroll.abs() > 0.0 {
+            app.cam.zoom_at(p, view_rect, (scroll * 0.0015).exp());
+        }
+    }
+    if resp.dragged_by(egui::PointerButton::Secondary) {
+        let d = resp.drag_delta();
+        app.cam.center += Vec2::new(-d.x, d.y) / app.cam.zoom;
+    }
 
-            // ---- 相机 ----
-            let hover = ui.ctx().input(|i| i.pointer.hover_pos());
-            if let Some(p) = hover
-                && view_rect.contains(p)
-            {
-                let scroll = ui.ctx().input(|i| i.raw_scroll_delta.y);
-                if scroll.abs() > 0.0 {
-                    app.cam.zoom_at(p, view_rect, (scroll * 0.0015).exp());
-                }
-            }
-            if resp.dragged_by(egui::PointerButton::Secondary) {
-                let d = resp.drag_delta();
-                app.cam.center += Vec2::new(-d.x, d.y) / app.cam.zoom;
-            }
+    // ---- 交互 ----
+    let pointer = ui.ctx().input(|i| i.pointer.interact_pos());
+    if resp.drag_started_by(egui::PointerButton::Primary)
+        && let Some(p) = pointer
+    {
+        let w = app.cam.to_world(p, view_rect);
+        let mut d = Drag::new(w);
+        if app.tool == Tool::Hand
+            && let Some(i) = app.piece_at(w)
+        {
+            d.grabbed = Some(i);
+            app.sim.grab(PieceId(i as u32), w);
+        }
+        app.drag = Some(d);
+    }
+    if resp.dragged_by(egui::PointerButton::Primary)
+        && let Some(p) = pointer
+        && let Some(d) = &mut app.drag
+    {
+        d.to = app.cam.to_world(p, view_rect);
+    }
+    if resp.drag_stopped_by(egui::PointerButton::Primary)
+        && let Some(d) = app.drag.take()
+    {
+        app.release(&d);
+    }
+    if app.tool == Tool::Hand
+        && resp.dragged_by(egui::PointerButton::Primary)
+        && let Some(p) = pointer
+    {
+        let w = app.cam.to_world(p, view_rect);
+        app.drag_piece(w);
+    }
 
-            // ---- 交互 ----
-            let pointer = ui.ctx().input(|i| i.pointer.interact_pos());
-            if resp.drag_started_by(egui::PointerButton::Primary)
-                && let Some(p) = pointer
-            {
-                let w = app.cam.to_world(p, view_rect);
-                let mut d = Drag::new(w);
-                if app.tool == Tool::Hand {
-                    d.grabbed = app.piece_at(w);
-                }
-                app.drag = Some(d);
-            }
-            if resp.dragged_by(egui::PointerButton::Primary)
-                && let Some(p) = pointer
-                && let Some(d) = &mut app.drag
-            {
-                d.to = app.cam.to_world(p, view_rect);
-            }
-            if resp.drag_stopped_by(egui::PointerButton::Primary)
-                && let Some(d) = app.drag.take()
-            {
-                app.release(&d);
-            }
-            if app.tool == Tool::Hand
-                && resp.dragged_by(egui::PointerButton::Primary)
-                && let Some(p) = pointer
-            {
-                let w = app.cam.to_world(p, view_rect);
-                app.drag_piece(w);
-            }
+    // ---- 渲染 ----
+    let v = view::View {
+        sim: &app.sim,
+        cam: &app.cam,
+        heat: app.heat,
+        debug: app.debug,
+        vessels: app.vessels,
+    };
+    v.paint(&painter, view_rect);
+    app.particles.draw(&painter, &app.cam, view_rect);
 
-            // ---- 渲染 ----
-            let v = view::View {
-                sim: &app.sim,
-                cam: &app.cam,
-                heat: app.heat,
-                debug: app.debug,
-                vessels: app.vessels,
-            };
-            v.paint(&painter, view_rect);
-            app.particles.draw(&painter, &app.cam, view_rect);
+    // 刀线预览
+    if app.tool == Tool::Knife
+        && let Some(d) = &app.drag
+    {
+        let a = app.cam.to_screen(d.from, view_rect);
+        let b = app.cam.to_screen(d.to, view_rect);
+        painter.line_segment(
+            [a, b],
+            egui::Stroke::new(2.0_f32, view::c32([255, 90, 90, 230])),
+        );
+        painter.circle_filled(a, 3.0, view::c32([255, 90, 90, 255]));
+        painter.circle_filled(b, 3.0, view::c32([255, 90, 90, 255]));
+    }
 
-            // 刀线预览
-            if app.tool == Tool::Knife
-                && let Some(d) = &app.drag
-            {
-                let a = app.cam.to_screen(d.from, view_rect);
-                let b = app.cam.to_screen(d.to, view_rect);
-                painter.line_segment(
-                    [a, b],
-                    egui::Stroke::new(2.0_f32, view::c32([255, 90, 90, 230])),
-                );
-                painter.circle_filled(a, 3.0, view::c32([255, 90, 90, 255]));
-                painter.circle_filled(b, 3.0, view::c32([255, 90, 90, 255]));
-            }
-
-            draw_overlay(app, &painter, view_rect);
+    draw_overlay(app, &painter, view_rect);
 }
 
 /// 世界画布上的叠加：提示条、暂停角标、选中高亮。
@@ -670,7 +852,8 @@ fn draw_overlay(app: &App, painter: &egui::Painter, view: egui::Rect) {
     {
         let poly = app.sim.piece_polygon(sel);
         if poly.len() >= 3 {
-            let mut pts: Vec<egui::Pos2> = poly.iter().map(|p| app.cam.to_screen(*p, view)).collect();
+            let mut pts: Vec<egui::Pos2> =
+                poly.iter().map(|p| app.cam.to_screen(*p, view)).collect();
             pts.push(pts[0]);
             painter.add(egui::Shape::line(
                 pts,
@@ -721,6 +904,9 @@ impl eframe::App for App {
             }
             for t in Tool::ALL {
                 if in_game && i.key_pressed(t.key()) {
+                    if self.tool != t {
+                        self.pending = None;
+                    }
                     self.tool = t;
                 }
             }

@@ -97,6 +97,58 @@ fn draw_tool(p: &Painter, r: Rect, tool: Tool, c: Color32) {
             line((0.18, 0.18), (0.82, 0.82));
             line((0.82, 0.18), (0.18, 0.82));
         }
+        // 焊接：两道焊缝 + 火花
+        Tool::Weld => {
+            line((0.1, 0.75), (0.55, 0.2));
+            line((0.45, 0.85), (0.9, 0.3));
+            for k in 0..4 {
+                let a = std::f32::consts::PI * (0.2 + k as f32 * 0.25);
+                let (s, co) = a.sin_cos();
+                line((0.5, 0.5), (0.5 + co * 0.3, 0.5 + s * 0.3));
+            }
+        }
+        // 钉住：钉子（头 + 尖）
+        Tool::Pin => {
+            let head = Rect::from_min_max(pt(0.34, 0.08), pt(0.66, 0.22));
+            p.rect_filled(head, 1.0, c);
+            line((0.5, 0.22), (0.5, 0.72));
+            let tip = vec![pt(0.4, 0.72), pt(0.6, 0.72), pt(0.5, 0.95)];
+            p.add(Shape::convex_polygon(tip, c, Stroke::NONE));
+        }
+        // 绳：一根波浪
+        Tool::Rope => {
+            let mut prev = pt(0.08, 0.5);
+            for i in 1..=10 {
+                let t = i as f32 / 10.0;
+                let y = 0.5 + (t * std::f32::consts::TAU * 1.5).sin() * 0.18;
+                let cur = pt(0.08 + t * 0.84, y);
+                p.line_segment([prev, cur], w);
+                prev = cur;
+            }
+        }
+        // 铰链：两个圆 + 轴
+        Tool::Hinge => {
+            p.circle_stroke(pt(0.3, 0.5), r.width() * 0.16, w);
+            p.circle_stroke(pt(0.7, 0.5), r.width() * 0.16, w);
+            p.circle_filled(pt(0.5, 0.5), r.width() * 0.05, c);
+            line((0.46, 0.5), (0.54, 0.5));
+        }
+        // 活塞：缸体 + 伸出的杆 + 箭头
+        Tool::Piston => {
+            let body = Rect::from_min_max(pt(0.12, 0.36), pt(0.5, 0.64));
+            p.rect_filled(body, 1.5, c);
+            line((0.5, 0.5), (0.8, 0.5));
+            line((0.68, 0.38), (0.85, 0.5));
+            line((0.68, 0.62), (0.85, 0.5));
+        }
+        // 发射：箭头从底下冲上去
+        Tool::Launch => {
+            line((0.3, 0.9), (0.7, 0.25));
+            line((0.7, 0.25), (0.5, 0.32));
+            line((0.7, 0.25), (0.72, 0.48));
+            line((0.14, 0.86), (0.34, 0.66));
+            line((0.24, 0.94), (0.44, 0.74));
+        }
     }
 }
 

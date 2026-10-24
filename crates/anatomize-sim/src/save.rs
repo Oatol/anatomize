@@ -65,6 +65,30 @@ pub struct JointSave {
     pub rest_limits: (f32, f32),
     pub tether_rest: f32,
     pub health: JointHealth,
+    /// 这一刀能不能切断它（MaD2 的 `jointUserData.cuttable`）。
+    #[serde(default = "yes")]
+    pub cuttable: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// 一条玩家连接（焊接 / 钉住 / 绳 / 铰链 / 活塞）。
+///
+/// 存**局部锚点**而不是世界坐标：读档之后块可能被摆到别处，
+/// 锚点跟着块走才对。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnSave {
+    pub kind: crate::ConnKind,
+    pub a: u32,
+    pub b: Option<u32>,
+    /// 刚体局部米。
+    pub local_a: Vec2,
+    pub local_b: Vec2,
+    pub rest: f32,
+    pub motor: f32,
+    pub dir: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +107,9 @@ pub struct SaveFile {
     /// 每个 `PartId` 的代表块下标。
     pub primary: Vec<u32>,
     pub joints: Vec<JointSave>,
+    /// 玩家连出来的东西。老存档没有这一段，`serde(default)` 兜住。
+    #[serde(default)]
+    pub conns: Vec<ConnSave>,
     pub tissue: Option<TissueField>,
     /// 累计切割次数与损伤记录（HUD 与回放用）。
     pub slices: u32,
@@ -153,6 +180,7 @@ impl Sim {
                 rest_limits: j.rest_limits,
                 tether_rest: j.tether_rest,
                 health: j.health,
+                cuttable: j.cuttable,
             })
             .collect();
 
@@ -168,6 +196,21 @@ impl Sim {
             pieces,
             primary: self.body.primary.iter().map(|p| p.0).collect(),
             joints,
+            conns: self
+                .conns
+                .iter()
+                .filter(|c| !c.broken)
+                .map(|c| ConnSave {
+                    kind: c.kind,
+                    a: c.a.0,
+                    b: c.b.map(|b| b.0),
+                    local_a: c.local_a,
+                    local_b: c.local_b,
+                    rest: c.rest,
+                    motor: c.motor,
+                    dir: c.dir,
+                })
+                .collect(),
             tissue: self.tissue.as_ref().map(|t| t.field.clone()),
             slices: self.slices,
             injuries: self
@@ -353,7 +396,35 @@ impl Sim {
                 health: js.health,
                 tether,
                 tether_rest: js.tether_rest,
+                cuttable: js.cuttable,
             });
+        }
+
+        // 玩家连接：锚点存的是刚体局部，转成世界点之后走 `connect_at`，
+        // 这样只有一条建关节的代码路径。
+        for c in &save.conns {
+            let a = PieceId(c.a);
+            if a.index() >= sim.body.pieces.len() {
+                continue;
+            }
+            let Some(wa) = sim.conn_world_point(a, c.local_a) else {
+                continue;
+            };
+            let wb = match c.b {
+                Some(b) => {
+                    let b = PieceId(b);
+                    if b.index() >= sim.body.pieces.len() {
+                        continue;
+                    }
+                    sim.conn_world_point(b, c.local_b)
+                }
+                None => Some(wa),
+            };
+            let Some(wb) = wb else { continue };
+            if let Some(idx) = sim.connect_at(c.kind, a, c.b.map(PieceId), wa, Some(wb)) {
+                sim.conns[idx].motor = c.motor;
+                sim.conns[idx].dir = c.dir;
+            }
         }
 
         // 生理与组织场

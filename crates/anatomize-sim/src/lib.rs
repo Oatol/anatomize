@@ -6,15 +6,19 @@
 //! 本 crate 依赖 rapier2d，但不依赖 Bevy —— 渲染是别人的事。
 
 pub mod actions;
+pub mod connect;
 pub mod edit;
 pub mod items;
 pub mod fracture;
+pub mod grab;
 pub mod props;
 pub mod rewind;
 pub mod save;
 pub mod sever;
 
 pub use fracture::{FractureConfig, SliceReport};
+pub use connect::{Conn, ConnKind};
+pub use grab::Grab;
 pub use items::{Category, ItemCatalog, ItemDef, Shape};
 pub use rewind::{Rewind, Snapshot};
 pub use save::{SAVE_VERSION, SaveFile};
@@ -165,6 +169,16 @@ pub struct JointInstance {
     pub tether: Option<ImpulseJointHandle>,
     /// tether 的静止长度（米），= 装配时两锚点的间距。
     pub tether_rest: f32,
+    /// 这一刀能不能把它切断。
+    ///
+    /// 抄 MaD2 的 `jointUserData.cuttable`：装甲、武器挂架、自动关节那些
+    /// "结构件"是 `false`——不然玩家一刀扫过去，枪就从手上掉下来了。
+    /// 解剖关节全部是 `true`（切到膝盖就该断）。
+    ///
+    /// **暂停时可以切**：MaD2 的条件是
+    /// `if(!(!cuttable && TimeLord.speed != 0))` —— 时间停住的时候，
+    /// 连不可断的关节也能断。那是个"编辑模式"的口子。
+    pub cuttable: bool,
 }
 
 impl JointInstance {
@@ -256,6 +270,23 @@ pub struct Sim {
     pub world: WorldBounds,
     /// 物品目录（外置 RON）。道具的渲染颜色、名字、分类都查它。
     pub catalog: ItemCatalog,
+    /// 每帧最多切几块（MaD2 的 "Max Cuts / Frame"，默认 12）。
+    ///
+    /// 这是**防冻屏**的护栏：一刀扫过整具身体最多产生十几块，再多的块会让
+    /// 求解器在一帧里解不完。MaD2 的默认值是 10，`Cutter` 里的静态值是 12。
+    pub cut_limit: u32,
+    /// 本帧已经切了几块。`step()` 每帧清零。
+    pub cuts_this_frame: u32,
+    /// 手正在抓着的东西。
+    ///
+    /// 存**抓取点**而不是"整块的线速度"：力作用在偏离质心的点上才会产生力矩，
+    /// 抓着一只手拖的时候身体才会翻转。见 `grab.rs`。
+    grab_state: Option<Grab>,
+    /// 玩家连出来的东西（焊接 / 钉住 / 绳 / 铰链 / 活塞）。
+    ///
+    /// 和解剖关节（`body.joints`）分开放：那套有健康四量、状态机、姿态目标，
+    /// 索引还要和 `Posture.targets` 对齐。玩家的连接没有健康——它只有"断没断"。
+    pub conns: Vec<crate::connect::Conn>,
     /// 关节损伤参数（来自 `assets/config/damage.ron`）。
     pub damage: JointParams,
     /// 累计发生过的状态迁移，按发生顺序。HUD / 日志 / 验收图都读它。
@@ -446,6 +477,7 @@ impl Sim {
                 health: JointHealth::default(),
                 tether: None,
                 tether_rest: (wa - wb).length().max(1e-4),
+                cuttable: true,
             });
         }
 
@@ -483,6 +515,10 @@ impl Sim {
             ground_y,
             world,
             catalog: ItemCatalog::asset(),
+            cut_limit: 12,
+            cuts_this_frame: 0,
+            grab_state: None,
+            conns: Vec::new(),
             damage,
             injuries: Vec::new(),
             tissue: None,
@@ -538,12 +574,18 @@ impl Sim {
     }
 
     pub fn step(&mut self) {
+        self.apply_grab();
         self.apply_posture();
         self.physics.step();
         // 载荷必须在刚解完的这一步读，否则读到的是上一帧的约束冲量
         self.update_joint_health();
         self.tick.advance();
         self.step_physio();
+        // 活塞电机：每帧把目标速度刷到关节上（rapier 的电机速度是建关节时设的）
+        self.update_pistons();
+        // 切割预算每帧回满。MaD2 是 `Cutter.cutLimit = Vars.cutlimit`，
+        // 在主循环里每帧设一次——同一个位置。
+        self.cuts_this_frame = 0;
         // 回溯快照：内部按 stride 跳，不是每帧都存
         self.capture_rewind();
     }

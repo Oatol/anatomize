@@ -22,7 +22,7 @@
 use anatomize_body::{Layer, layer_color};
 use anatomize_core::geom::{inset_convex, polygon_centroid, ui};
 use anatomize_core::{HeatChannel, Vec2};
-use anatomize_sim::{PieceId, Sim};
+use anatomize_sim::{ConnKind, PieceId, Sim};
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
 use crate::camera::Camera;
@@ -32,12 +32,7 @@ pub fn c32(c: [u8; 4]) -> Color32 {
 }
 
 /// 在 4×4 快照上做双线性采样。`u`/`v` 是 0..3 的连续坐标。
-fn bilinear(
-    grid: &anatomize_tissue::HeatGrid,
-    u: f32,
-    v: f32,
-    ch: HeatChannel,
-) -> f32 {
+fn bilinear(grid: &anatomize_tissue::HeatGrid, u: f32, v: f32, ch: HeatChannel) -> f32 {
     let u = u.clamp(0.0, 3.0);
     let v = v.clamp(0.0, 3.0);
     let x0 = (u.floor() as usize).min(2);
@@ -101,6 +96,9 @@ impl View<'_> {
         if let Some(ch) = self.heat {
             self.paint_heat(painter, view, ch);
         }
+        // 玩家连出来的东西画在身体之上：焊接、绳、活塞要能一眼看见，
+        // 不然"我明明连上了怎么没反应"。
+        self.paint_conns(painter, view);
         if self.debug {
             self.paint_joints(painter, view);
         }
@@ -186,10 +184,7 @@ impl View<'_> {
             // 部件局部厘米 → 世界米
             let to_world = |lc: Vec2| {
                 let m = (lc - piece.centroid) * anatomize_sim::CM;
-                Vec2::new(
-                    pos.x + m.x * cos - m.y * sin,
-                    pos.y + m.x * sin + m.y * cos,
-                )
+                Vec2::new(pos.x + m.x * cos - m.y * sin, pos.y + m.x * sin + m.y * cos)
             };
 
             // 渲染网格比快照网格密一档（8×8 格 / 9×9 顶点），顶点色按双线性
@@ -201,10 +196,7 @@ impl View<'_> {
             let mut mesh = egui::Mesh::default();
             for gy in 0..=N {
                 for gx in 0..=N {
-                    let lc = Vec2::new(
-                        grid.lo.x + gx as f32 * cw,
-                        grid.lo.y + gy as f32 * chh,
-                    );
+                    let lc = Vec2::new(grid.lo.x + gx as f32 * cw, grid.lo.y + gy as f32 * chh);
                     let sp = self.cam.to_screen(to_world(lc), view);
                     // 顶点在 4×4 网格里的连续坐标
                     let u = gx as f32 / N as f32 * 3.0;
@@ -368,6 +360,107 @@ impl View<'_> {
                     [80, 110, 190, 120]
                 };
                 painter.line_segment([a, b], Stroke::new(1.2_f32, c32(c)));
+            }
+        }
+    }
+
+    /// 玩家连出来的东西。
+    ///
+    /// 每种连接有自己的画法，让玩家一眼分辨：
+    ///
+    /// | 种类 | 画法 |
+    /// |---|---|
+    /// | 焊接 | 短粗实线 + 两端方块 |
+    /// | 钉住 | 菱形钉头 + 细线到块 |
+    /// | 绳 | 虚线（松弛时画成弧） |
+    /// | 铰链 | 空心圆 |
+    /// | 活塞 | 双线（缸体）+ 箭头（方向） |
+    fn paint_conns(&self, painter: &Painter, view: Rect) {
+        for c in &self.sim.conns {
+            if c.broken {
+                continue;
+            }
+            let Some((wa, wb)) = self.sim.conn_points(c) else {
+                continue;
+            };
+            let a = self.cam.to_screen(wa, view);
+            let b = self.cam.to_screen(wb, view);
+            let col = c32(c.kind.color());
+
+            match c.kind {
+                ConnKind::Weld => {
+                    painter.line_segment([a, b], Stroke::new(3.0_f32, col));
+                    for s in [a, b] {
+                        painter.rect_filled(
+                            Rect::from_center_size(s, egui::vec2(5.0, 5.0)),
+                            1.0,
+                            col,
+                        );
+                    }
+                }
+                ConnKind::Pin => {
+                    // 钉头：一个菱形
+                    let r = 5.0;
+                    let dia = vec![
+                        Pos2::new(a.x, a.y - r),
+                        Pos2::new(a.x + r, a.y),
+                        Pos2::new(a.x, a.y + r),
+                        Pos2::new(a.x - r, a.y),
+                    ];
+                    painter.add(Shape::convex_polygon(dia, col, Stroke::NONE));
+                    painter.line_segment([a, b], Stroke::new(1.0_f32, col));
+                }
+                ConnKind::Rope => {
+                    // 虚线：绳子不传递压力，画成断的，和"焊接"区分开
+                    let n = 7;
+                    for k in 0..n {
+                        if k % 2 == 1 {
+                            continue;
+                        }
+                        let t0 = k as f32 / n as f32;
+                        let t1 = (k + 1) as f32 / n as f32;
+                        painter.line_segment(
+                            [
+                                Pos2::new(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0),
+                                Pos2::new(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1),
+                            ],
+                            Stroke::new(1.6_f32, col),
+                        );
+                    }
+                }
+                ConnKind::Hinge => {
+                    painter.line_segment([a, b], Stroke::new(1.0_f32, col));
+                    let mid = Pos2::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5);
+                    painter.circle_stroke(mid, 4.0, Stroke::new(1.6_f32, col));
+                }
+                ConnKind::Piston => {
+                    // 活塞两端锚点**重合**（建的时候就是同一个世界点），
+                    // 画 a→b 会得到零长度。所以沿**轴**画一根杆。
+                    let (_, rot) = self.sim.piece_pose(c.a);
+                    let (s0, co) = rot.sin_cos();
+                    let ax =
+                        Vec2::new(c.axis.x * co - c.axis.y * s0, c.axis.x * s0 + c.axis.y * co);
+                    let p0 = self.cam.to_screen(wa, view);
+                    let p1 = self.cam.to_screen(wa + ax * 0.22, view);
+                    let d = p1 - p0;
+                    let len = d.length().max(1.0);
+                    let n = egui::vec2(-d.y / len, d.x / len) * 3.0;
+                    painter.line_segment([p0 + n, p1 + n], Stroke::new(1.4_f32, col));
+                    painter.line_segment([p0 - n, p1 - n], Stroke::new(1.4_f32, col));
+                    // 缸底封口
+                    painter.line_segment([p0 + n, p0 - n], Stroke::new(1.4_f32, col));
+                    // 推的时候画箭头
+                    if c.motor != 0.0 {
+                        let (tip, base) = if c.dir > 0.0 { (p1, p0) } else { (p0, p1) };
+                        let dd = (tip - base).normalized();
+                        let nn = egui::vec2(-dd.y, dd.x) * 4.0;
+                        painter.add(Shape::convex_polygon(
+                            vec![tip, tip - dd * 8.0 + nn, tip - dd * 8.0 - nn],
+                            col,
+                            Stroke::NONE,
+                        ));
+                    }
+                }
             }
         }
     }
