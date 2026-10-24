@@ -70,6 +70,9 @@ pub struct SaveFile {
     /// 身体计划的 id。P0 只有 `human_01`，按 id 从内置资产重建。
     pub plan_id: String,
     pub tick: u64,
+    /// 世界大小（米）。读档时按它重建边界墙。
+    pub world_w: f32,
+    pub world_h: f32,
     pub ambient_c: f32,
     pub tissue_metab_base: f32,
     pub bus: PhysioBus,
@@ -149,6 +152,8 @@ impl Sim {
             version: SAVE_VERSION,
             plan_id: self.plan.id.clone(),
             tick: self.tick.0,
+            world_w: self.world.width,
+            world_h: self.world.height,
             ambient_c: self.ambient_c,
             tissue_metab_base: self.tissue_metab_base,
             bus: self.physio.bus,
@@ -178,7 +183,14 @@ impl Sim {
         let plan = BodyPlan::from_ron(plan_src)?;
 
         // 先按标准骨架装一遍，拿到 `plan` / `ground` / 生理默认值
-        let mut sim = Self::spawn(plan, Vec2::new(0.0, 40.0), ground_y);
+        let world = crate::WorldBounds::new(save.world_w, save.world_h);
+        let mut sim = Self::spawn_in_world(
+            plan,
+            Vec2::new(0.0, world.stand_height()),
+            ground_y,
+            anatomize_body::DamageConfig::asset().joint,
+            world,
+        );
         sim.tick = anatomize_core::Tick(save.tick);
         sim.ambient_c = save.ambient_c;
         sim.tissue_metab_base = save.tissue_metab_base;
@@ -218,6 +230,7 @@ impl Sim {
                     mass: ps.mass,
                     still_s: 0.0,
                     frozen_pose: Some((ps.pos, ps.rot)),
+                    deleted: false,
                 });
                 let _ = id;
                 continue;
@@ -257,6 +270,7 @@ impl Sim {
                 mass: ps.mass,
                 still_s: 0.0,
                 frozen_pose: None,
+                deleted: false,
             });
         }
 
@@ -343,7 +357,29 @@ impl Sim {
     }
 }
 
-fn polygon_area(poly: &[Vec2]) -> f32 {
+impl Sim {
+    /// 存到文件。返回字节数。
+    ///
+    /// 用 RON 而不是二进制：存档是给人看的，出问题时能直接翻。
+    /// 体积换可调试性——在这个项目里这笔买卖一直划算。
+    pub fn save_to(&self, path: &std::path::Path) -> std::io::Result<usize> {
+        let ron = self.save().to_ron();
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(path, &ron)?;
+        Ok(ron.len())
+    }
+
+    /// 从文件读。
+    pub fn load_from(path: &std::path::Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let src = std::fs::read_to_string(path)?;
+        let save = SaveFile::from_ron(&src)?;
+        Self::load(&save, 0.0)
+    }
+}
+
+pub(crate) fn polygon_area(poly: &[Vec2]) -> f32 {
     let n = poly.len();
     if n < 3 {
         return 0.0;

@@ -1,0 +1,25 @@
+[package]
+name = "anatomize-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "可玩的宿主：窗口、相机、刀具、HUD"
+
+[[bin]]
+name = "anatomize"
+path = "src/main.rs"
+
+[dependencies]
+anatomize-core = { path = "../anatomize-core" }
+anatomize-body = { path = "../anatomize-body" }
+anatomize-cut = { path = "../anatomize-cut" }
+anatomize-tissue = { path = "../anatomize-tissue" }
+anatomize-physio = { path = "../anatomize-physio" }
+anatomize-sim = { path = "../anatomize-sim" }
+
+eframe = { version = "0.31", default-features = false, features = [
+    "glow",
+    "default_fonts",
+] }
+egui = "0.31"
+png = "0.18.1"

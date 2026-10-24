@@ -5,12 +5,15 @@
 //!
 //! 本 crate 依赖 rapier2d，但不依赖 Bevy —— 渲染是别人的事。
 
+pub mod edit;
 pub mod fracture;
+pub mod props;
 pub mod rewind;
 pub mod save;
 pub mod sever;
 
 pub use fracture::{FractureConfig, SliceReport};
+pub use props::PropKind;
 pub use rewind::{Rewind, Snapshot};
 pub use save::{SAVE_VERSION, SaveFile};
 pub use sever::{SeverOutcome, apply_cut, build_tissue, layer_kind};
@@ -24,6 +27,41 @@ use rapier2d::prelude::*;
 
 /// RON 用厘米，物理用米。
 pub const CM: f32 = 0.01;
+
+/// 世界的大小（米）。地面在 `y = 0`，顶在 `y = height`。
+///
+/// 沙盒需要一个**有边界**的世界：不然碎片会飞到无穷远，相机找不到它们，
+/// 存档也没法定义"这个世界有多大"。P0 默认 4×3 米（一个人 + 周围一点空间），
+/// 以后可以按需求建更大的。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WorldBounds {
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for WorldBounds {
+    fn default() -> Self {
+        Self {
+            width: 4.0,
+            height: 3.0,
+        }
+    }
+}
+
+impl WorldBounds {
+    pub const fn new(width: f32, height: f32) -> Self {
+        Self { width, height }
+    }
+
+    pub fn half_w(&self) -> f32 {
+        self.width * 0.5
+    }
+
+    /// 人站在地面上时，骨盆大概该放多高（米）。
+    pub fn stand_height(&self) -> f32 {
+        (self.height * 0.25).clamp(0.7, 1.2)
+    }
+}
 
 /// rapier 0.36 已从 nalgebra 迁到 glam，这里显式别名，避免和 `anatomize_core::Vec2` 混淆。
 type RVec2 = rapier2d::math::Vec2;
@@ -168,6 +206,11 @@ pub struct Piece {
     /// 冻结后的位姿（世界米 + 弧度）。冻结的块已经从物理世界摘掉，
     /// 没有刚体可查，但渲染还要画它。
     pub frozen_pose: Option<(Vec2, f32)>,
+    /// 被删除工具移除。刚体已经没了，渲染也跳过。
+    ///
+    /// 不做 `Vec::remove` 是因为 `PieceId` 就是下标——删一个会让后面所有
+    /// 引用（关节、选中、回滚快照）全部错位。墓碑便宜得多。
+    pub deleted: bool,
 }
 
 impl Piece {
@@ -195,6 +238,10 @@ pub struct Sim {
     pub body: BodyInstance,
     pub tick: Tick,
     pub ground: ColliderHandle,
+    /// 地面高度（米）。渲染画地面线用。
+    ground_y: f32,
+    /// 世界大小（米）。边界墙按它建。
+    pub world: WorldBounds,
     /// 关节损伤参数（来自 `assets/config/damage.ron`）。
     pub damage: JointParams,
     /// 累计发生过的状态迁移，按发生顺序。HUD / 日志 / 验收图都读它。
@@ -256,14 +303,55 @@ impl Sim {
     }
 
     /// 同上，但显式指定损伤参数（测试与参数扫描用）。
+    ///
+    /// 注意这里给的是**很大的世界**：老 API 的语义是"地面之上是无限空间"，
+    /// 突然给一个 4×3 米的盒子会让从 y=40 掉下来的身体撞到天花板，
+    /// 落地冲量从 0.6 涨到 2.6，把 M3 的标定全部推翻。
     pub fn spawn_with(plan: BodyPlan, origin: Vec2, ground_y: f32, damage: JointParams) -> Self {
+        Self::spawn_in_world(
+            plan,
+            origin,
+            ground_y,
+            damage,
+            WorldBounds::new(60.0, 200.0),
+        )
+    }
+
+    /// 在一个指定大小的世界里建身体。
+    pub fn spawn_in(plan: BodyPlan, origin: Vec2, world: WorldBounds) -> Self {
+        let damage = anatomize_body::DamageConfig::asset().joint;
+        Self::spawn_in_world(plan, origin, 0.0, damage, world)
+    }
+
+    /// 最底层那个：世界尺寸、地面高度、损伤参数全都显式给。
+    pub fn spawn_in_world(
+        plan: BodyPlan,
+        origin: Vec2,
+        ground_y: f32,
+        damage: JointParams,
+        world: WorldBounds,
+    ) -> Self {
         let mut physics = Physics::new();
 
-        // 地面
+        // 四面墙。没有墙的话碎片会飞出去，然后永远找不到。
         let ground = physics.colliders.insert(
-            ColliderBuilder::cuboid(3.0, 0.05)
+            ColliderBuilder::cuboid(world.half_w() + 0.2, 0.05)
                 .translation(RVec2::new(0.0, ground_y - 0.05))
                 .friction(0.9)
+                .build(),
+        );
+        for sx in [-1.0f32, 1.0] {
+            physics.colliders.insert(
+                ColliderBuilder::cuboid(0.05, world.height * 0.5 + 1.0)
+                    .translation(RVec2::new(sx * (world.half_w() + 0.05), ground_y + world.height * 0.5))
+                    .friction(0.6)
+                    .build(),
+            );
+        }
+        physics.colliders.insert(
+            ColliderBuilder::cuboid(world.half_w() + 0.2, 0.05)
+                .translation(RVec2::new(0.0, ground_y + world.height + 0.05))
+                .friction(0.6)
                 .build(),
         );
 
@@ -360,6 +448,7 @@ impl Sim {
                 mass: p.mass,
                 still_s: 0.0,
                 frozen_pose: None,
+                deleted: false,
             })
             .collect();
         let primary = (0..plan.parts.len()).map(|i| PieceId(i as u32)).collect();
@@ -375,6 +464,8 @@ impl Sim {
             },
             tick: Tick(0),
             ground,
+            ground_y,
+            world,
             damage,
             injuries: Vec::new(),
             tissue: None,
@@ -807,6 +898,21 @@ impl Sim {
     /// 关节名字（日志用）。
     pub fn joint_name(&self, id: JointId) -> &str {
         &self.plan.joints[id.index()].name
+    }
+
+    /// 地面在世界里的 y（米）。渲染画地面线用。
+    pub fn ground_y(&self) -> f32 {
+        self.ground_y
+    }
+
+    /// 身体坐标系的朝向（弧度）。取骨盆的旋转。
+    pub fn body_rotation(&self) -> f32 {
+        self.plan
+            .parts
+            .iter()
+            .position(|p| p.name == "pelvis")
+            .map(|i| self.piece_pose(self.body.primary[i]).1)
+            .unwrap_or(0.0)
     }
 
     /// 身体局部坐标系原点在世界里的位置（米）。

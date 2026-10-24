@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
-"""把 release 产物打包到 dist/。
+"""打包**可玩的程序**到 dist/。
 
-约定（见 `.workbuddy-ai/memory/MEMORY.md`）：
-
-- 每次完成任务都跑一遍，产物放 `dist/`，**不进版本库**（`.gitignore` 已排除）。
-- `dist/` 里同时留一份解包好的目录（能直接双击跑）和一个 zip（能发给别人）。
-
-用法：
-
-    python scripts/package.py              # 先 cargo build --release，再打包
-    python scripts/package.py --no-build   # 用现有的 target/release 直接打包
+注意：这里只打 `anatomize.exe`（窗口版，双击就能切人）。
+离线验收工具（m3_demo / m6_demo / scan …）**不进发行包**——那些是开发工具，
+玩家不需要，而且会把 20 MB 的包撑到 60 MB。
 
 产物：
 
     dist/anatomize-<版本>-win64/
-        *.exe
-        assets/
+        anatomize.exe
+        assets/          # 配置（tissue.ron / damage.ron / physio.ron / ui.ron）
         README.txt
     dist/anatomize-<版本>-win64.zip
+
+`dist/` 在 `.gitignore` 里，不上传。
+
+用法：
+
+    python scripts/package.py              # 先 cargo build --release，再打包
+    python scripts/package.py --no-build
 """
 
 from __future__ import annotations
@@ -36,7 +37,6 @@ TARGET = ROOT / "target" / "release"
 
 
 def version() -> str:
-    """从 workspace 的 Cargo.toml 读版本号。"""
     for line in (ROOT / "Cargo.toml").read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith("version") and "=" in line:
@@ -47,36 +47,12 @@ def version() -> str:
 def build() -> None:
     print("[1/4] cargo build --release ...")
     r = subprocess.run(
-        ["cargo", "build", "--release", "--workspace"],
+        ["cargo", "build", "--release", "-p", "anatomize-app"],
         cwd=ROOT,
         text=True,
     )
     if r.returncode != 0:
         sys.exit("构建失败，停止打包")
-
-
-def collect_bins() -> list[Path]:
-    """只收真正的可执行文件。
-
-    `target/release/` 里还有一堆 `.d` / `.pdb` / 无后缀的增量文件，按
-    "无后缀即程序"筛会混进来。
-    """
-    if sys.platform == "win32":
-        bins = sorted(TARGET.glob("*.exe"))
-    else:
-        bins = [
-            p
-            for p in sorted(TARGET.glob("*"))
-            if p.is_file() and p.suffix == "" and p.stat().st_mode & 0o111
-        ]
-    if not bins:
-        sys.exit("target/release 里没有可执行文件，先构建")
-    return bins
-
-
-def copy_tree(src: Path, dst: Path) -> None:
-    if src.is_dir():
-        shutil.copytree(src, dst)
 
 
 def main() -> None:
@@ -93,53 +69,54 @@ def main() -> None:
     else:
         print("[1/4] 跳过构建")
 
+    exe_name = "anatomize.exe" if sys.platform == "win32" else "anatomize"
+    exe = TARGET / exe_name
+    if not exe.exists():
+        sys.exit(f"找不到 {exe}，先构建")
+
     print(f"[2/4] 清理 {stage} ...")
     if stage.exists():
         shutil.rmtree(stage)
     stage.mkdir(parents=True)
 
-    bins = collect_bins()
-    print(f"[3/4] 复制 {len(bins)} 个可执行文件 + assets ...")
-    for b in bins:
-        shutil.copy2(b, stage / b.name)
-    copy_tree(ROOT / "assets", stage / "assets")
-    copy_tree(ROOT / "docs", stage / "docs")
+    print("[3/4] 复制程序 + assets ...")
+    shutil.copy2(exe, stage / exe_name)
+    shutil.copytree(ROOT / "assets", stage / "assets")
 
-    total = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file())
+    size = exe.stat().st_size
     readme = f"""Anatomize {ver}
 ==================================================
 
 2D 解剖沙盒。构建时间：{dt.datetime.now():%Y-%m-%d %H:%M}
 
-所有程序都是**离线验收工具**：不开窗口，直接跑出 PNG 和数字。
-这是刻意的——核心 crate 不依赖 Bevy，所以能在没有 GPU 的环境里跑参数扫描。
+双击 anatomize.exe 就能玩。不开控制台，不需要安装。
 
-可执行文件
+操作
 --------------------------------------------------
-  p05_demo.exe    5 秒回溯 + 参数扫描      -> docs/p05_rewind_scan.png
-  m6_demo.exe     断面分层 + 碎片 + 监护仪  -> docs/m6_section_hud.png
-  m5_demo.exe     冷、饿、疼               -> docs/m5_cold_food_pain.png
-  m4_demo.exe     失血闭环                 -> docs/m4_hemorrhage.png
-  m3_demo.exe     关节状态机 + 断供        -> docs/m3-*.png
-  cut_demo.exe    多边形切割
-  tissue_demo.exe 组织场四个通道
-  ragdoll.exe     M0 的 ragdoll 落地
-  scan.exe        批量参数实验（CSV 输出）
+  鼠标左键拖动      用当前工具
+  鼠标右键拖动      平移视角
+  滚轮              缩放
+  空格              暂停 / 继续
+  Q                 选择（点一下看属性）
+  1 / 2 / 3 / 4 / 5 手 / 刀 / 锤 / 冻结 / 删除
+  R                 视角复位
+  F1                显示血管和关节
+  F2                循环切换组织场热力图
 
-批量实验
+界面
 --------------------------------------------------
-  scan.exe --scenario bleed-femoral --param tone_max=0.3:1.0:0.175 --fast
-  scan.exe --help
+  左侧   工具栏
+  中间   世界（有边界墙）
+  右侧   生成道具 / 生理 / 关节 / 环境 / 显示 / 选中属性
+  底部   时间控制 · 回滚 · 新建世界 · 保存 · 读取
 
-用法
+存档在程序目录的 saves/ 下，RON 格式，可以直接用文本编辑器看。
+
+中文字体
 --------------------------------------------------
-  m6_demo.exe                 # 中文（默认）
-  m6_demo.exe --lang en       # 英文
-  set ANATOMIZE_LANG=en && m6_demo.exe
-  set ANATOMIZE_FONT=D:\\fonts\\msyh.ttc && m6_demo.exe
-
-中文字形从系统字体读（Windows 的微软雅黑 / macOS 苹方 / Linux Noto CJK），
-字体文件不进发行包。找不到就自动退回英文。
+界面从系统字体读中文字形（Windows 的微软雅黑 / macOS 苹方 / Linux Noto CJK）。
+找不到就退回英文，并在右侧面板顶上提示。
+要指定字体：set ANATOMIZE_FONT=D:\fonts\msyh.ttc
 
 配置
 --------------------------------------------------
@@ -150,7 +127,7 @@ def main() -> None:
 
 体积
 --------------------------------------------------
-  解包后 {total / 1024 / 1024:.1f} MB
+  程序 {size / 1024 / 1024:.1f} MB
 """
     (stage / "README.txt").write_text(readme, encoding="utf-8")
 
@@ -161,12 +138,12 @@ def main() -> None:
             if f.is_file():
                 z.write(f, f.relative_to(DIST))
 
-    zsize = zip_path.stat().st_size
+    total = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file())
     print()
     print(f"  {stage}")
-    print(f"    解包 {total / 1024 / 1024:.1f} MB，{len(bins)} 个可执行文件")
+    print(f"    解包 {total / 1024 / 1024:.1f} MB")
     print(f"  {zip_path}")
-    print(f"    {zsize / 1024 / 1024:.1f} MB")
+    print(f"    {zip_path.stat().st_size / 1024 / 1024:.1f} MB")
     print()
     print("dist/ 已被 .gitignore 排除，不会上传。")
 

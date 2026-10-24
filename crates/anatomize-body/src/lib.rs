@@ -10,7 +10,9 @@
 //! 本 crate 不依赖物理引擎：它描述的是"人体是什么"，不是"人体怎么动"。
 
 pub mod health;
+pub mod palette;
 
+pub use palette::{layer_color, layer_name};
 pub use health::{DamageConfig, JointHealth, JointLoad, JointParams, JointState};
 
 use anatomize_core::{JointId, PartId, VesselId, Vec2};

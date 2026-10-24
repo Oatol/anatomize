@@ -4,7 +4,16 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：**P0.5 完成** — 除了 P0 的全套，还多了两样：切错了能退回 5 秒（缓冲只占 11 MB），以及一个能扫参数空间的实验 CLI。
+> 状态：**能玩了** — 双击 `anatomize.exe` 开窗口，鼠标当刀，切人、断肢、喂食、冻人、造道具、存世界。
+> 界面是 People Playground 那套骨架：左边工具、右边物品、中间世界、底下时间。
+
+![Anatomize window](docs/app.png)
+
+<sub>窗口版。左边六个工具（选择 / 手 / 刀 / 锤 / 冻结 / 删除），中间是有边界的世界，右边是生成道具 + 生理 + 关节 + 环境 + 选中属性，底部是时间控制和存档。断面是逐像素算的：皮肤、脂肪、肌肉、骨四层，和离线验收图用的是同一份多边形和同一组层厚。</sub>
+
+![Anatomize with props](docs/app-props.png)
+
+<sub>生成道具之后。木箱、铁球、长板、水泥块——它们和身体走同一条物理路径：能被切、被冻、被拖、被存进存档。选中水泥块时右下角会显示质量和顶点数。</sub>
 
 ![M0 ragdoll](docs/m0-ragdoll.png)
 
@@ -93,6 +102,26 @@ cargo run --release -p anatomize-tools --bin m5_demo   # M5：冷、饿、疼
 cargo run --release -p anatomize-tools --bin m6_demo   # M6：断面、碎片、监护仪
 cargo run --release -p anatomize-tools --bin p05_demo  # P0.5：回溯 + 参数扫描
 ```
+
+## 玩
+
+```bash
+cargo run --release -p anatomize-app          # 开发时
+```
+
+发行版：`dist/anatomize-0.1.0-win64/anatomize.exe`（双击即开）。
+
+| 操作 | |
+|---|---|
+| 左键拖动 | 用当前工具 |
+| 右键拖动 | 平移视角 |
+| 滚轮 | 缩放 |
+| 空格 | 暂停 |
+| Q / 1 / 2 / 3 / 4 / 5 | 选择 / 手 / 刀 / 锤 / 冻结 / 删除 |
+| R | 视角复位 |
+| F1 / F2 | 血管关节 / 热力图 |
+
+界面是 egui 做骨架（布局、命中、hover）+ 图标自绘。为什么是 eframe 不是 Bevy，见 ADR-028。
 
 ## 批量实验
 
@@ -236,6 +265,7 @@ ANATOMIZE_LANG=en cargo run --release -p anatomize-tools --bin m5_demo
 | `anatomize-cut` | 多边形裁剪、凸分解、切面 × 血管折线求交、断面分层（M1/M3/M6） | 否 |
 | `anatomize-sim` | 世界编排、rapier2d 驱动、关节健康 ↔ 约束桥接、断供耦合、L2↔L4 闭环、碎片与存档（M3–M6） | 仅 rapier2d |
 | `anatomize-tools` | headless 实验、帧渲染、断面着色、参数扫描、中文文字、中英文案表 | 否 |
+| `anatomize-app` | **可玩的宿主**：窗口、相机、工具、物品栏、存档 UI | eframe / egui |
 
 前五个 crate 的 `Cargo.toml` 里不允许出现 `bevy` / `wgpu` / `rapier`。
 
@@ -257,7 +287,8 @@ ANATOMIZE_LANG=en cargo run --release -p anatomize-tools --bin m5_demo
 | ✅ M4 | 循环 / 呼吸 / 神经 / 代谢闭环 + 断端电导（新增 27 测试：4 多速率 + 18 生理单元 + 5 真闭环集成） |
 | ✅ M5 | 温度调节 + 消化 + 疼痛与姿态，中英文界面（新增 15 测试：3 语言 + 2 代谢 + 6 场景 + 4 渲染） |
 | ✅ M6 | 断面分层着色 + 碎片刚体化 + 冻结 + 监护仪 + 存档（新增 15 测试：6 断面 + 9 碎片/存档/性能） |
-| ✅ P0.5 | 5 秒回溯 + 参数扫描 CLI（新增 5 测试；全 workspace 116 个） |
+| ✅ P0.5 | 5 秒回溯 + 参数扫描 CLI（新增 5 测试） |
+| ✅ 窗口版 | `anatomize-app`：PP 式三段布局 + 自绘图标 + 道具生成 + 世界尺寸 + 存档读写（全 workspace 121 个） |
 
 顺序铁律：M2 必须在 M4 之前。没有通量，生理层就只能拍脑袋写常数。
 

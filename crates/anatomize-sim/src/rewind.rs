@@ -281,6 +281,7 @@ impl Sim {
                     mass: ps.mass,
                     still_s: 0.0,
                     frozen_pose: Some((ps.pos, ps.rot)),
+                    deleted: false,
                 });
                 continue;
             }
@@ -324,6 +325,7 @@ impl Sim {
                 mass: ps.mass,
                 still_s: 0.0,
                 frozen_pose: None,
+                deleted: false,
             });
         }
 

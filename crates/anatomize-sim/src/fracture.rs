@@ -344,6 +344,7 @@ impl Sim {
                     mass: frag.mass,
                     still_s: 0.0,
                     frozen_pose: None,
+                    deleted: false,
                 });
                 id
             };
@@ -578,6 +579,30 @@ impl Sim {
             Vec2::new(pos.translation.x, pos.translation.y),
             pos.rotation.angle(),
         )
+    }
+
+    /// 把一块往某个世界点拉（手工具）。
+    ///
+    /// 用**速度弹簧**而不是"把位置直接设成鼠标位置"：直接设位置会让这块
+    /// 穿透别的东西，也不会带动关节。给速度的话物理照常解算——
+    /// 拎起一条腿时整条腿会跟着晃，那才对。
+    ///
+    /// `gain` 是力度倍率，1.0 大约等于"100ms 内到位"。
+    pub fn pull_piece(&mut self, id: PieceId, target: Vec2, gain: f32) {
+        let p = &self.body.pieces[id.index()];
+        if p.is_frozen() {
+            return;
+        }
+        let rb = &mut self.physics.bodies[p.body];
+        let pos = rb.position().translation;
+        let d = target - Vec2::new(pos.x, pos.y);
+        // 时间常数 0.10s：跟手，但不至于把速度拉爆
+        let mut v = d / 0.10 * gain.clamp(0.0, 3.0);
+        let max = 8.0;
+        if v.length() > max {
+            v = v.normalize_or_zero() * max;
+        }
+        rb.set_linvel(rv(v), true);
     }
 
     /// 一块碎片的世界线速度（m/s）。冻结的返回零。
