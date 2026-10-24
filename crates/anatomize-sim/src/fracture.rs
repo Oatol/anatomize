@@ -296,15 +296,15 @@ impl Sim {
         } else {
             self.plan.parts[part.index()].offset
         };
-        let heats: Vec<[f32; 4]> = match self.tissue.as_ref() {
+        let heats: Vec<Option<anatomize_tissue::HeatGrid>> = match self.tissue.as_ref() {
             Some(t) => frags
                 .iter()
                 .map(|f| {
                     let poly: Vec<Vec2> = f.polygon.iter().map(|v| *v + heat_offset).collect();
-                    anatomize_tissue::mean_channels(&t.field, &poly)
+                    Some(anatomize_tissue::sample_grid(&t.field, &poly, heat_offset))
                 })
                 .collect(),
-            None => vec![[0.0; 4]; frags.len()],
+            None => vec![None; frags.len()],
         };
         // 主块 = 含原部件质心的那块
         let primary_idx = frags
@@ -365,7 +365,7 @@ impl Sim {
                 p.heat = if fi == primary_idx {
                     None
                 } else {
-                    Some(heats[fi])
+                    heats[fi].clone()
                 };
                 p.still_s = 0.0;
                 pid
@@ -385,7 +385,7 @@ impl Sim {
                     heat: if fi == primary_idx {
                         None
                     } else {
-                        Some(heats[fi])
+                        heats[fi].clone()
                     },
                     deleted: false,
                 });
@@ -641,19 +641,31 @@ impl Sim {
     ///   不能再查场。
     /// - **主块**：从场里现算，每帧更新，所以能看到出血、缺氧、降温的变化。
     /// - **道具**：`None`（没有组织）。
-    pub fn piece_heat(&self, id: PieceId) -> Option<[f32; 4]> {
+    pub fn piece_heat(&self, id: PieceId) -> Option<anatomize_tissue::HeatGrid> {
         let p = &self.body.pieces[id.index()];
         if p.deleted || p.part == PartId::NONE {
             return None;
         }
-        if let Some(h) = p.heat {
-            return Some(h);
+        if let Some(h) = &p.heat {
+            return Some(h.clone());
         }
         let t = self.tissue.as_ref()?;
         let offset = self.plan.parts[p.part.index()].offset;
         let poly: Vec<Vec2> = p.polygon.iter().map(|v| *v + offset).collect();
-        // 步长 4：主块每帧都要算，全扫太贵；热力图是滤镜，不需要 texel 精度
-        Some(anatomize_tissue::mean_channels_strided(&t.field, &poly, 4))
+        Some(anatomize_tissue::sample_grid(&t.field, &poly, offset))
+    }
+
+    /// 这块有没有骨头。
+    ///
+    /// 骨画在"含原部件骨中心"的那一块上——也就是 `primary`。切开大腿之后，
+    /// 只有还连着髋的那半有股骨，另一半是纯肌肉。之前两半各画一个骨圆，
+    /// 看起来就像"骨头被复制了一份"。
+    pub fn piece_has_bone(&self, id: PieceId) -> bool {
+        let p = &self.body.pieces[id.index()];
+        if p.deleted || p.part == PartId::NONE {
+            return false;
+        }
+        self.body.primary[p.part.index()] == id
     }
 
     /// 一块碎片的世界位姿（米 / 弧度）。冻结的读快照，删除的返回零。

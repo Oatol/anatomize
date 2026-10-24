@@ -13,7 +13,7 @@ pub mod time;
 
 pub use glam::Vec2;
 pub use heat::HeatChannel;
-pub use geom::{inset_convex, polygon_area, polygon_centroid};
+pub use geom::{clip_convex, inset_convex, polygon_area, polygon_centroid};
 pub use ids::*;
 pub use injury::*;
 pub use lang::{ASSET_UI_CONFIG, Lang, UiConfig};

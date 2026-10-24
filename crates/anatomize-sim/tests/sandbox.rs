@@ -312,11 +312,15 @@ fn a_detached_piece_carries_its_own_heat() {
         if p.deleted || p.part == anatomize_core::PartId::NONE {
             continue;
         }
-        if let Some(h) = p.heat {
+        if let Some(h) = &p.heat {
             with_heat += 1;
+            let m = h.mean();
             // 灌注必须是个正数——切下来的腿不是"零灌注"（那是断供才有的）
-            assert!(h[0] >= 0.0 && h[0].is_finite(), "heat 不合法：{h:?}");
-            assert!(h[2] > 30.0, "温度应该接近体温，实际 {}", h[2]);
+            assert!(m[0] >= 0.0 && m[0].is_finite(), "heat 不合法：{m:?}");
+            assert!(m[2] > 30.0, "温度应该接近体温，实际 {}", m[2]);
+            // 4×4 网格必须真的分得开：16 格里至少有一个和别的不同
+            let distinct = h.cells.iter().any(|c| (c[2] - m[2]).abs() > 1e-4);
+            assert!(distinct || h.cells.iter().all(|c| c[2] == h.cells[0][2]));
         } else {
             without_heat += 1;
         }

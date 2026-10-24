@@ -443,3 +443,124 @@ fn sever_supply_impl(
     }
     n
 }
+
+/// 一块组织的 4×4 低分辨率快照。
+///
+/// # 为什么是 4×4
+///
+/// 一块一个纯色太糙（骨折处和边缘差很多），逐 texel 又太重（每块一张
+/// 24672 的场，20 块就是 2MB）。4×4 = 16 格，256 字节，块内能看到大致梯度。
+///
+/// 坐标是**部件局部厘米**：`lo`/`hi` 是这块的包围盒。渲染时把 16 个格子
+/// 按块当前位姿变换到世界，再和块多边形求交——所以它跟着块飞。
+#[derive(Debug, Clone)]
+pub struct HeatGrid {
+    pub cells: [[f32; 4]; 16],
+    /// 部件局部厘米坐标下的包围盒。
+    pub lo: Vec2,
+    pub hi: Vec2,
+}
+
+impl HeatGrid {
+    /// 第 (gx, gy) 格（0..4）。
+    pub fn cell(&self, gx: usize, gy: usize) -> [f32; 4] {
+        self.cells[(gy.min(3)) * 4 + (gx.min(3))]
+    }
+
+    /// 整块的平均（用于不需要梯度的地方，比如检视面板）。
+    pub fn mean(&self) -> [f32; 4] {
+        let mut m = [0.0f32; 4];
+        for c in &self.cells {
+            for k in 0..4 {
+                m[k] += c[k];
+            }
+        }
+        for k in 0..4 {
+            m[k] /= 16.0;
+        }
+        m
+    }
+}
+
+/// 把一块区域采样成 4×4 的低分辨率快照。
+///
+/// 每格取落在"格子 ∩ 多边形"里的 texel 平均。空格子退化成整块平均——
+/// 不然一块细长的肉会有大片黑格子。
+pub fn sample_grid(f: &TissueField, poly: &[Vec2], to_local: Vec2) -> HeatGrid {
+    let n = poly.len();
+    if n < 3 {
+        return HeatGrid {
+            cells: [[0.0; 4]; 16],
+            lo: Vec2::ZERO,
+            hi: Vec2::ZERO,
+        };
+    }
+    let (mut lo, mut hi) = (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY));
+    for p in poly {
+        lo = lo.min(*p);
+        hi = hi.max(*p);
+    }
+    let span = hi - lo;
+    let cell_w = (span.x / 4.0).max(1e-3);
+    let cell_h = (span.y / 4.0).max(1e-3);
+
+    let mut cells = [[0.0f32; 4]; 16];
+    let mut counts = [0usize; 16];
+
+    for y in 0..f.h as usize {
+        for x in 0..f.w as usize {
+            let i = y * f.w as usize + x;
+            if f.kind[i] == TissueKind::Outside {
+                continue;
+            }
+            let p = Vec2::new(
+                f.origin.x + (x as f32 + 0.5) * f.texel_cm,
+                f.origin.y + (y as f32 + 0.5) * f.texel_cm,
+            );
+            if !point_in_poly(poly, p) {
+                continue;
+            }
+            let gx = (((p.x - lo.x) / cell_w) as usize).min(3);
+            let gy = (((p.y - lo.y) / cell_h) as usize).min(3);
+            let k = gy * 4 + gx;
+            cells[k][0] += f.perfusion[i];
+            cells[k][1] += f.o2[i];
+            cells[k][2] += f.temp[i];
+            cells[k][3] += f.damage[i];
+            counts[k] += 1;
+        }
+    }
+
+    // 整块平均，给空格子兜底
+    let mut all = [0.0f32; 4];
+    let mut total = 0usize;
+    for k in 0..16 {
+        if counts[k] > 0 {
+            let c = counts[k] as f32;
+            for ch in 0..4 {
+                all[ch] += cells[k][ch];
+                cells[k][ch] /= c;
+            }
+            total += counts[k];
+        }
+    }
+    if total > 0 {
+        for ch in 0..4 {
+            all[ch] /= total as f32;
+        }
+    }
+    for k in 0..16 {
+        if counts[k] == 0 {
+            cells[k] = all;
+        }
+    }
+
+    // `poly` 是**身体局部**（要查场），但 `lo/hi` 要存**部件局部**
+    // ——渲染时按块的位姿变换，而块的位姿是相对部件中心的。
+    // 差这一个 offset，热力图就会整体偏到别的地方去。
+    HeatGrid {
+        cells,
+        lo: lo - to_local,
+        hi: lo - to_local + Vec2::new(cell_w * 4.0, cell_h * 4.0),
+    }
+}

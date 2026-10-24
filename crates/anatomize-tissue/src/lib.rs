@@ -59,13 +59,14 @@ pub mod pressure;
 pub mod raster;
 pub mod transport;
 
+pub use raster::HeatGrid;
 pub use config::{ASSET_TISSUE_CONFIG, KindTable, TissueConfig};
 pub use damage::time_to_hypoxia;
 pub use field::TissueField;
 pub use pressure::{PressureSolver, arterial_inflow, venous_return, wound_flux};
 pub use raster::{
     Shape, add_stump, apply_wound, apply_wound_path, clear_region, mean_channels,
-    mean_channels_strided, rasterize, set_inlet, sever_supply,
+    mean_channels_strided, rasterize, sample_grid, set_inlet, sever_supply,
     sever_supply_beyond,
 };
 

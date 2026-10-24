@@ -31,6 +31,21 @@ pub fn c32(c: [u8; 4]) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
 }
 
+/// 扇形三角化之后用 Mesh 提交。凸多边形用这个最稳。
+fn fill_mesh(painter: &Painter, pts: &[Pos2], color: Color32) {
+    if pts.len() < 3 {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for p in pts {
+        mesh.colored_vertex(*p, color);
+    }
+    for i in 1..pts.len() - 1 {
+        mesh.add_triangle(0, i as u32, i as u32 + 1);
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
 pub fn c32a(c: [u8; 4], a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], a)
 }
@@ -126,25 +141,56 @@ impl View<'_> {
     fn paint_heat(&self, painter: &Painter, view: Rect, ch: HeatChannel) {
         for i in 0..self.sim.body.pieces.len() {
             let id = PieceId(i as u32);
-            let Some(h) = self.sim.piece_heat(id) else {
+            let Some(grid) = self.sim.piece_heat(id) else {
                 continue;
-            };
-            let v = match ch {
-                HeatChannel::Perfusion => h[0],
-                HeatChannel::Oxygen => h[1],
-                HeatChannel::Temperature => h[2],
-                HeatChannel::Damage => h[3],
             };
             let poly = self.sim.piece_polygon(id);
             if poly.len() < 3 {
                 continue;
             }
-            let pts: Vec<Pos2> = poly.iter().map(|q| self.cam.to_screen(*q, view)).collect();
-            painter.add(Shape::convex_polygon(
-                pts,
-                c32a(ch.color(ch.normalize(v)), 170),
-                Stroke::NONE,
-            ));
+            let piece = &self.sim.body.pieces[i];
+            let (pos, rot) = self.sim.piece_pose(id);
+            let (sin, cos) = rot.sin_cos();
+            // 部件局部厘米 → 世界米
+            let to_world = |lc: Vec2| {
+                let m = (lc - piece.centroid) * anatomize_sim::CM;
+                Vec2::new(
+                    pos.x + m.x * cos - m.y * sin,
+                    pos.y + m.x * sin + m.y * cos,
+                )
+            };
+            let cw = (grid.hi.x - grid.lo.x) / 4.0;
+            let chh = (grid.hi.y - grid.lo.y) / 4.0;
+            for gy in 0..4 {
+                for gx in 0..4 {
+                    let x0 = grid.lo.x + gx as f32 * cw;
+                    let y0 = grid.lo.y + gy as f32 * chh;
+                    let quad = vec![
+                        to_world(Vec2::new(x0, y0)),
+                        to_world(Vec2::new(x0 + cw, y0)),
+                        to_world(Vec2::new(x0 + cw, y0 + chh)),
+                        to_world(Vec2::new(x0, y0 + chh)),
+                    ];
+                    // 格子是矩形，块不是——求交之后才是真正要涂的那一小片
+                    let clipped = anatomize_core::clip_convex(&quad, &poly);
+                    if clipped.len() < 3 {
+                        continue;
+                    }
+                    let cell = grid.cell(gx, gy);
+                    let v = match ch {
+                        HeatChannel::Perfusion => cell[0],
+                        HeatChannel::Oxygen => cell[1],
+                        HeatChannel::Temperature => cell[2],
+                        HeatChannel::Damage => cell[3],
+                    };
+                    let pts: Vec<Pos2> =
+                        clipped.iter().map(|q| self.cam.to_screen(*q, view)).collect();
+                    // 用 Mesh 而不是 `convex_polygon`：裁剪出来的多边形经常
+                    // 带共线点，egui 的凸性检查会**整块丢弃**，表现就是热力图
+                    // 只画出来一半。Mesh 自己扇形三角化，不挑。
+                    fill_mesh(painter, &pts, c32a(ch.color(ch.normalize(v)), 170));
+                }
+            }
         }
     }
 
@@ -222,7 +268,10 @@ impl View<'_> {
             return;
         }
         // 骨：用圆。真实的骨截面是圆/椭圆，用内缩多边形画出来是个方块，不像。
-        if prof.bone_cm > 0.02 {
+        //
+        // **只有含骨的那一块画**。切开大腿之后，还连着髋的那半有股骨，
+        // 另一半是纯肌肉——之前两半各画一个骨圆，看起来像骨头被复制了一份。
+        if prof.bone_cm > 0.02 && self.sim.piece_has_bone(id) {
             let c = polygon_centroid(&cur);
             let s = self.cam.to_screen(c, view);
             painter.circle_filled(
