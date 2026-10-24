@@ -160,6 +160,17 @@ impl Canvas {
         }
     }
 
+    /// 像素坐标的实心圆。
+    pub fn disc_px(&mut self, c: (i32, i32), r_px: i32, col: [u8; 4]) {
+        for dy in -r_px..=r_px {
+            for dx in -r_px..=r_px {
+                if dx * dx + dy * dy <= r_px * r_px {
+                    self.put(c.0 + dx, c.1 + dy, col);
+                }
+            }
+        }
+    }
+
     /// 像素坐标的直线，`t` 是半宽。
     pub fn line_px(&mut self, a: (i32, i32), b: (i32, i32), c: [u8; 4], t: i32) {
         let (x1, y1) = (a.0 as f32, a.1 as f32);

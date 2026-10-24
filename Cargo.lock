@@ -54,6 +54,8 @@ version = "0.1.0"
 dependencies = [
  "anatomize-body",
  "anatomize-core",
+ "anatomize-cut",
+ "anatomize-tissue",
  "rapier2d",
 ]
 

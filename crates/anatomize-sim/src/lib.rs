@@ -5,7 +5,11 @@
 //!
 //! 本 crate 依赖 rapier2d，但不依赖 Bevy —— 渲染是别人的事。
 
-use anatomize_body::BodyPlan;
+pub mod sever;
+
+pub use sever::{SeverOutcome, apply_cut, build_tissue, layer_kind};
+
+use anatomize_body::{BodyPlan, JointHealth, JointLoad, JointParams, JointState};
 use anatomize_core::{DT, JointId, PartId, Tick, Vec2};
 use rapier2d::prelude::*;
 
@@ -93,10 +97,27 @@ pub struct JointInstance {
     pub id: JointId,
     pub a: PartId,
     pub b: PartId,
+    /// 硬约束（revolute）。`Dislocated` 之后被移除，handle 失效。
     pub handle: ImpulseJointHandle,
     /// 两端锚点，各自在部件局部坐标系（米）。
     pub anchor_a: Vec2,
     pub anchor_b: Vec2,
+    /// 解剖活动度（弧度），来自 `BodyPlan`，**永不改变**。
+    /// 关节坏了以后 rapier 那边的限位会放宽，但"正常的活动度"这个参照系不能动，
+    /// 否则 `JointHealth` 会拿放宽后的限位去比，越伤越不疼。
+    pub rest_limits: (f32, f32),
+    /// 关节健康四量 + 状态机。
+    pub health: JointHealth,
+    /// 脱位后的软约束（rope）。`Intact` 时为 None。
+    pub tether: Option<ImpulseJointHandle>,
+    /// tether 的静止长度（米），= 装配时两锚点的间距。
+    pub tether_rest: f32,
+}
+
+impl JointInstance {
+    pub fn state(&self) -> JointState {
+        self.health.state
+    }
 }
 
 /// 一具装在物理世界里的人。
@@ -111,11 +132,26 @@ pub struct Sim {
     pub body: BodyInstance,
     pub tick: Tick,
     pub ground: ColliderHandle,
+    /// 关节损伤参数（来自 `assets/config/damage.ron`）。
+    pub damage: JointParams,
+    /// 累计发生过的状态迁移，按发生顺序。HUD / 日志 / 验收图都读它。
+    pub injuries: Vec<(JointId, JointState, f32)>,
 }
 
 impl Sim {
     /// 建世界 + 一具人体。`origin` 是身体局部原点在世界中的位置（米）。
     pub fn spawn(plan: BodyPlan, origin: Vec2, ground_y: f32) -> Self {
+        let damage = anatomize_body::DamageConfig::asset().joint;
+        Self::spawn_with(plan, origin, ground_y, damage)
+    }
+
+    /// 同上，但显式指定损伤参数（测试与参数扫描用）。
+    pub fn spawn_with(
+        plan: BodyPlan,
+        origin: Vec2,
+        ground_y: f32,
+        damage: JointParams,
+    ) -> Self {
         let mut physics = Physics::new();
 
         // 地面
@@ -183,6 +219,11 @@ impl Sim {
                 .build();
 
             let handle = physics.impulse_joints.insert(a, b, joint, true);
+            let (wa, wb) = {
+                let pa = physics.bodies[a].position().transform_point(rv(anchor_a));
+                let pb = physics.bodies[b].position().transform_point(rv(anchor_b));
+                (pa, pb)
+            };
             joints.push(JointInstance {
                 id: j.id,
                 a: j.a,
@@ -190,6 +231,10 @@ impl Sim {
                 handle,
                 anchor_a,
                 anchor_b,
+                rest_limits: j.limits,
+                health: JointHealth::default(),
+                tether: None,
+                tether_rest: (wa - wb).length().max(1e-4),
             });
         }
 
@@ -199,6 +244,8 @@ impl Sim {
             body: BodyInstance { parts, joints },
             tick: Tick(0),
             ground,
+            damage,
+            injuries: Vec::new(),
         }
     }
 
@@ -214,9 +261,192 @@ impl Sim {
         rb.set_linvel(RVec2::new(v.x, v.y), true);
     }
 
+    /// 给某个部件一个速度（测试 / 外力打击用）。
+    pub fn set_part_velocity(&mut self, part: &str, v: Vec2) {
+        let Some(p) = self.plan.parts.iter().position(|p| p.name == part) else {
+            return;
+        };
+        let rb = &mut self.physics.bodies[self.body.parts[p].body];
+        rb.set_linvel(RVec2::new(v.x, v.y), true);
+    }
+
+    /// 把某个部件钉死在世界里（`Fixed` 刚体）。
+    ///
+    /// 玩法上相当于"用钩子挂住"：验收图里把人体吊起来，腿才能真的垂下来、
+    /// 才能看出脱位后是"挂着"还是"飞走"。地面上的 ragdoll 只会瘫成一堆，
+    /// 什么都看不出来。
+    pub fn set_part_fixed(&mut self, part: &str, fixed: bool) {
+        let Some(p) = self.plan.parts.iter().position(|p| p.name == part) else {
+            return;
+        };
+        let rb = &mut self.physics.bodies[self.body.parts[p].body];
+        rb.set_body_type(
+            if fixed {
+                RigidBodyType::Fixed
+            } else {
+                RigidBodyType::Dynamic
+            },
+            true,
+        );
+    }
+
     pub fn step(&mut self) {
         self.physics.step();
+        // 载荷必须在刚解完的这一步读，否则读到的是上一帧的约束冲量
+        self.update_joint_health();
         self.tick.advance();
+    }
+
+    // -----------------------------------------------------------------------
+    // 关节健康 ↔ 物理约束
+    // -----------------------------------------------------------------------
+
+    /// 读一个关节本 tick 的载荷。
+    ///
+    /// 三个来源：
+    /// - `angle`：两刚体相对转角（`Rot2` 相乘取角，和 rapier 判限位用的是同一个量）
+    /// - `impulse`：角向 DOF 冲量，以及限位约束自己的冲量，取较大者
+    /// - `tether_stretch`：脱位后两锚点被拉开的距离
+    pub fn joint_load(&self, idx: usize) -> JointLoad {
+        let inst = &self.body.joints[idx];
+        let rb_a = &self.physics.bodies[self.body.parts[inst.a.index()].body];
+        let rb_b = &self.physics.bodies[self.body.parts[inst.b.index()].body];
+        let angle = (rb_a.rotation().inverse() * *rb_b.rotation()).angle();
+
+        let mut impulse = 0.0f32;
+        if let Some(j) = self.physics.impulse_joints.get(inst.handle) {
+            let angular = j.impulses.z.abs();
+            let limit = j
+                .data
+                .limits(JointAxis::AngX)
+                .map(|l| l.impulse.abs())
+                .unwrap_or(0.0);
+            impulse = angular.max(limit);
+        }
+
+        let mut tether_stretch = 0.0f32;
+        if let Some(h) = inst.tether {
+            let (pa, pb) = self.joint_world_anchors(inst);
+            tether_stretch = ((pa - pb).length() - inst.tether_rest).max(0.0);
+            if let Some(j) = self.physics.impulse_joints.get(h) {
+                let pull = j
+                    .data
+                    .limits(JointAxis::LinX)
+                    .map(|l| l.impulse.abs())
+                    .unwrap_or(0.0);
+                impulse = impulse.max(pull);
+            }
+        }
+
+        JointLoad {
+            angle,
+            limits: inst.rest_limits,
+            impulse,
+            tether_stretch,
+        }
+    }
+
+    /// 推进所有关节的健康状态机，返回本 tick 发生的迁移。
+    ///
+    /// 迁移一旦发生就立刻改物理约束——延迟一帧会让"脱位"看起来像"突然断了"。
+    pub fn update_joint_health(&mut self) -> Vec<(JointId, JointState)> {
+        let mut changed = Vec::new();
+        for i in 0..self.body.joints.len() {
+            let load = self.joint_load(i);
+            let params = self.damage;
+            let Some(next) = self.body.joints[i].health.update(load, &params, DT) else {
+                continue;
+            };
+            let id = self.body.joints[i].id;
+            self.apply_joint_state(i, next);
+            self.injuries.push((id, next, self.tick.0 as f32 * DT));
+            changed.push((id, next));
+        }
+        changed
+    }
+
+    /// 把状态机的结论变成物理动作。
+    ///
+    /// 这是 M3 最关键的一段：**Dislocated 不是"移除约束"，而是"换成软约束"**。
+    /// 直接 `remove_joint` 会让小腿带着惯性飞出去，那是 v0.1 最大的手感缺陷。
+    fn apply_joint_state(&mut self, idx: usize, state: JointState) {
+        let inst = &self.body.joints[idx];
+        let (ha, hb) = (
+            self.body.parts[inst.a.index()].body,
+            self.body.parts[inst.b.index()].body,
+        );
+        let (anchor_a, anchor_b) = (inst.anchor_a, inst.anchor_b);
+        let rest = inst.rest_limits;
+        let rom = inst.health.rom_scale;
+        let tether_rest = inst.tether_rest;
+        let hard = inst.handle;
+        let old_tether = inst.tether;
+        // 绳长 = 装配时的间隙 + 软组织余量。不能只用间隙——装配正确的关节
+        // 间隙接近 0，那样绳子等于零长度，脱位后会变回完全刚性。
+        let tether_len = tether_rest + self.damage.tether_len_cm * CM;
+
+        match state {
+            // 扭伤 / 半脱位：还连着，只是限位被拉松了
+            JointState::Intact | JointState::Sprained | JointState::Subluxed => {
+                if let Some(j) = self.physics.impulse_joints.get_mut(hard, true) {
+                    j.data
+                        .set_limits(JointAxis::AngX, [rest.0 * rom, rest.1 * rom]);
+                }
+            }
+            // 脱位：硬约束换成绳子。肢体还挂着，会甩、会痛，但不会飞走。
+            JointState::Dislocated => {
+                self.physics.impulse_joints.remove(hard, true);
+                let rope = RopeJointBuilder::new(tether_len)
+                    .local_anchor1(rv(anchor_a))
+                    .local_anchor2(rv(anchor_b))
+                    .contacts_enabled(false)
+                    .build();
+                let h = self.physics.impulse_joints.insert(ha, hb, rope, true);
+                self.body.joints[idx].tether = Some(h);
+            }
+            // 离断：绳子也没了，两个 island 彻底分开
+            JointState::Severed => {
+                if let Some(h) = old_tether {
+                    self.physics.impulse_joints.remove(h, true);
+                }
+                // 防御性：正常流程里硬约束在 Dislocated 就已经移除，但如果状态
+                // 是外部直接置到 Severed 的（调试 / 存档恢复），这里得补一刀。
+                // `remove` 对已移除的 handle 返回 None，重复调用无害。
+                self.physics.impulse_joints.remove(hard, true);
+                self.body.joints[idx].tether = None;
+            }
+        }
+    }
+
+    /// 直接扣一个关节的完整性（调试 / 演示 / 测试用）。
+    ///
+    /// 真实路径永远是"受载荷 → 磨损 → integrity 下降"，这个入口绕过了物理，
+    /// 只该出现在 `m3_demo` 和测试里。
+    pub fn wear_joint(&mut self, name: &str, amount: f32) {
+        let Some(i) = self
+            .body
+            .joints
+            .iter()
+            .position(|j| self.plan.joints[j.id.index()].name == name)
+        else {
+            return;
+        };
+        let h = &mut self.body.joints[i].health;
+        h.integrity = (h.integrity - amount).max(0.0);
+        h.accumulated += amount;
+    }
+
+    /// 按名字找关节下标。
+    pub fn joint_index(&self, name: &str) -> Option<usize> {
+        self.body
+            .joints
+            .iter()
+            .position(|j| self.plan.joints[j.id.index()].name == name)
+    }
+
+    /// 关节名字（日志用）。
+    pub fn joint_name(&self, id: JointId) -> &str {
+        &self.plan.joints[id.index()].name
     }
 
     /// 部件在世界坐标下的多边形顶点（米）。

@@ -70,6 +70,31 @@ pub fn distance_point_segment(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     (p - (a + ab * t)).length()
 }
 
+/// 线段上离 `p` 最近的点。
+pub fn closest_point_on_segment(p: Vec2, a: Vec2, b: Vec2) -> Vec2 {
+    let ab = b - a;
+    let len2 = ab.length_squared();
+    if len2 < 1e-12 {
+        return a;
+    }
+    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+/// 两条线段之间的最短距离（相交时为 0）。
+///
+/// 用来判"刀口擦过血管壁但没穿过中心线"——相交判定只能回答"断没断"，
+/// 回答不了"划破了没"。二维下只有四种候选：四个端点到对面线段的距离。
+pub fn distance_segment_segment(a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2) -> f32 {
+    if segment_segment(a1, a2, b1, b2).is_some() {
+        return 0.0;
+    }
+    distance_point_segment(a1, b1, b2)
+        .min(distance_point_segment(a2, b1, b2))
+        .min(distance_point_segment(b1, a1, a2))
+        .min(distance_point_segment(b2, a1, a2))
+}
+
 /// 折线是否被切割线段穿过。
 pub fn polyline_hit(a: Vec2, b: Vec2, path: &[Vec2]) -> bool {
     !segment_polyline(a, b, path).is_empty()

@@ -222,3 +222,70 @@ pub fn set_inlet(f: &mut TissueField, path: &[Vec2], radius_cm: f32) -> usize {
     }
     n
 }
+
+/// 切断一片区域的血供：把落在区域内的组织 texel 的 `k0` 清零。
+///
+/// `k0` 是血管床的基础电导，清零之后该 texel 的 `bed` / `conductance` /
+/// `c_art` / `c_ven` 全为 0（下一 tick 的 `update_conductance` 会一并刷新），
+/// 于是它既拿不到动脉血、也排不回静脉，灌注归零，氧只出不进，损伤开始累积。
+///
+/// `polygons` 一般来自 `BodyPlan::subtree_polygons(断端部件)`。整块清零是最粗
+/// 的一档；要区分"断在近端还是远端"用 [`sever_supply_beyond`]。
+///
+/// 返回受影响的 texel 数。
+pub fn sever_supply(f: &mut TissueField, polygons: &[Vec<Vec2>]) -> usize {
+    sever_supply_impl(f, polygons, None)
+}
+
+/// 切断一片区域里**位于某个半空间内**的血供。
+///
+/// 比 [`sever_supply`] 精确一档：血管在 `point` 处断开，`distal_dir` 是断口之后
+/// 的流向，于是只有 `dot(texel - point, distal_dir) > 0` 的那一半断供。
+///
+/// 这条区分不是装饰。股动脉在髋部断 → 整条腿坏死；在膝上断 → 只有小腿坏死，
+/// 大腿还活着，还流血。设计文档 6.4 说"血管是折线，所以能精确回答断在哪一段"，
+/// 这里就是那句话的实际收益。
+pub fn sever_supply_beyond(
+    f: &mut TissueField,
+    polygons: &[Vec<Vec2>],
+    point: Vec2,
+    distal_dir: Vec2,
+) -> usize {
+    if distal_dir.length_squared() < 1e-12 {
+        return 0;
+    }
+    sever_supply_impl(f, polygons, Some((point, distal_dir)))
+}
+
+fn sever_supply_impl(
+    f: &mut TissueField,
+    polygons: &[Vec<Vec2>],
+    half_space: Option<(Vec2, Vec2)>,
+) -> usize {
+    if polygons.is_empty() {
+        return 0;
+    }
+    let mut n = 0;
+    for i in 0..f.len() {
+        if matches!(f.kind[i], TissueKind::Outside | TissueKind::Air) {
+            continue;
+        }
+        // 创口 texel 永远不划进断供区：断端敞在大气里，它接的是**动脉侧**
+        // （这就是 `wound_vessel_boost` 的物理含义）。把断端也清成 k0=0，
+        // 会得到"腿断了却不流血"——踩过一次，1cm texel 分辨不出 0.3cm 的刀口。
+        if f.wound[i] {
+            continue;
+        }
+        let c = f.center_of(i);
+        if let Some((point, dir)) = half_space {
+            if (c - point).dot(dir) <= 0.0 {
+                continue;
+            }
+        }
+        if polygons.iter().any(|poly| point_in_convex(poly, c)) {
+            f.k0[i] = 0.0;
+            n += 1;
+        }
+    }
+    n
+}

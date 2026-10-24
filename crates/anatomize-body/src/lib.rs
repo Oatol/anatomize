@@ -4,9 +4,16 @@
 //! 文本（用名字引用父部件和关节）编译成用 [`PartId`] 索引的紧凑结构，
 //! 并在编译期做一轮不变量校验。
 //!
+//! 也包含[`health`]：关节健康四量与三级状态机。它是纯逻辑，不碰刚体，
+//! 所以可以脱离物理世界单独测。
+//!
 //! 本 crate 不依赖物理引擎：它描述的是"人体是什么"，不是"人体怎么动"。
 
-use anatomize_core::{JointId, PartId, Vec2};
+pub mod health;
+
+pub use health::{DamageConfig, JointHealth, JointLoad, JointParams, JointState};
+
+use anatomize_core::{JointId, PartId, VesselId, Vec2};
 use serde::Deserialize;
 
 pub const ASSET_HUMAN_01: &str = include_str!("../../../assets/body_plans/human_01.ron");
@@ -21,6 +28,9 @@ pub struct RawPlan {
     pub bounds: [[f32; 2]; 2],
     pub parts: Vec<RawPart>,
     pub joints: Vec<RawJoint>,
+    /// 血管。M3 起用于"切断股动脉 → 下游断供"。
+    #[serde(default)]
+    pub vessels: Vec<RawVessel>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +80,30 @@ pub enum Layer {
     Organ,
 }
 
+/// 血管的一端。`Heart` 是虚拟节点，位置取路径的第一个点。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RawVesselNode {
+    Heart,
+    Junction,
+    Part(String),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RawVessel {
+    pub name: String,
+    pub from: RawVesselNode,
+    pub to: RawVesselNode,
+    /// 局部折线（cm，身体坐标系）。切割时用它求交——**这是全项目最重要的
+    /// 一条设计**：血管是几何折线而不是图论里的抽象边，所以"你切断了股动脉的
+    /// 哪一段"是可以精确回答的。
+    pub path: Vec<[f32; 2]>,
+    pub radius_mm: f32,
+    /// 占总心输出量的比例。同一血管床内求和必须为 1。
+    pub flow_share: f32,
+    pub arterial: bool,
+}
+
 // ---------------------------------------------------------------------------
 // 编译后的结构
 // ---------------------------------------------------------------------------
@@ -80,6 +114,41 @@ pub struct BodyPlan {
     pub bounds: (Vec2, Vec2),
     pub parts: Vec<Part>,
     pub joints: Vec<Joint>,
+    pub vessels: Vec<Vessel>,
+}
+
+/// 血管端点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VesselNode {
+    Heart,
+    Junction,
+    Part(PartId),
+}
+
+#[derive(Debug, Clone)]
+pub struct Vessel {
+    pub id: VesselId,
+    pub name: String,
+    pub from: VesselNode,
+    pub to: VesselNode,
+    /// 身体局部坐标（cm）下的折线，至少两个点。
+    pub path: Vec<Vec2>,
+    pub radius_mm: f32,
+    pub flow_share: f32,
+    pub arterial: bool,
+    /// 起点所在的部件（`Heart` / `Junction` 时为 None），用于确定"切断上游还是下游"。
+    pub from_part: Option<PartId>,
+    /// 终点所在的部件。切断这根血管 → 这个部件及其子树断供。
+    pub to_part: Option<PartId>,
+}
+
+impl Vessel {
+    pub fn total_len(&self) -> f32 {
+        self.path
+            .windows(2)
+            .map(|w| (w[1] - w[0]).length())
+            .sum()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +306,8 @@ impl BodyPlan {
             });
         }
 
+        let vessels = compile_vessels(&raw.vessels, &index, &parts)?;
+
         Ok(Self {
             id: raw.id,
             bounds: (
@@ -245,6 +316,7 @@ impl BodyPlan {
             ),
             parts,
             joints,
+            vessels,
         })
     }
 
@@ -260,6 +332,97 @@ impl BodyPlan {
     pub fn part_world_polygon(&self, part: &Part) -> Vec<Vec2> {
         part.polygon.iter().map(|v| *v + part.offset).collect()
     }
+
+    pub fn vessel(&self, name: &str) -> Option<&Vessel> {
+        self.vessels.iter().find(|v| v.name == name)
+    }
+
+    /// `part` 及其全部子部件（含自己）。切断供给 `part` 的血管 → 这些部件断供。
+    pub fn subtree(&self, part: PartId) -> Vec<PartId> {
+        let mut out = vec![part];
+        let mut i = 0;
+        while i < out.len() {
+            let cur = out[i];
+            for p in &self.parts {
+                if p.parent == Some(cur) && !out.contains(&p.id) {
+                    out.push(p.id);
+                }
+            }
+            i += 1;
+        }
+        out
+    }
+
+    /// 一组部件的多边形并集（各自转到身体坐标系后拼起来）。
+    /// 组织场用它把"这条血管供血的区域"涂成断供区。
+    pub fn subtree_polygons(&self, part: PartId) -> Vec<Vec<Vec2>> {
+        self.subtree(part)
+            .into_iter()
+            .map(|id| self.part_world_polygon(&self.parts[id.index()]))
+            .collect()
+    }
+}
+
+fn compile_vessels(
+    raw: &[RawVessel],
+    index: &std::collections::HashMap<String, usize>,
+    parts: &[Part],
+) -> Result<Vec<Vessel>, BodyError> {
+    let mut out = Vec::with_capacity(raw.len());
+    for (i, v) in raw.iter().enumerate() {
+        if v.path.len() < 2 {
+            return Err(BodyError::DegenerateVessel(v.name.clone()));
+        }
+        let resolve = |n: &RawVesselNode| -> Result<(VesselNode, Option<PartId>), BodyError> {
+            Ok(match n {
+                RawVesselNode::Heart => (VesselNode::Heart, None),
+                RawVesselNode::Junction => (VesselNode::Junction, None),
+                RawVesselNode::Part(name) => {
+                    let idx = *index
+                        .get(name)
+                        .ok_or_else(|| BodyError::UnknownPart(name.clone()))?;
+                    (VesselNode::Part(PartId(idx as u16)), Some(PartId(idx as u16)))
+                }
+            })
+        };
+        let (from, from_part) = resolve(&v.from)?;
+        let (to, to_part) = resolve(&v.to)?;
+        let path: Vec<Vec2> = v.path.iter().map(|p| Vec2::new(p[0], p[1])).collect();
+
+        // 不变量 4：端点必须落在对应部件的多边形里
+        if let Some(p) = from_part {
+            let poly = &parts[p.index()].polygon;
+            if !point_in_convex(poly, path[0] - parts[p.index()].offset) {
+                return Err(BodyError::VesselEndOutside {
+                    vessel: v.name.clone(),
+                    part: parts[p.index()].name.clone(),
+                });
+            }
+        }
+        if let Some(p) = to_part {
+            let poly = &parts[p.index()].polygon;
+            if !point_in_convex(poly, *path.last().unwrap() - parts[p.index()].offset) {
+                return Err(BodyError::VesselEndOutside {
+                    vessel: v.name.clone(),
+                    part: parts[p.index()].name.clone(),
+                });
+            }
+        }
+
+        out.push(Vessel {
+            id: VesselId(i as u16),
+            name: v.name.clone(),
+            from,
+            to,
+            path,
+            radius_mm: v.radius_mm,
+            flow_share: v.flow_share,
+            arterial: v.arterial,
+            from_part,
+            to_part,
+        });
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +451,10 @@ pub enum BodyError {
     AnchorOutside { joint: String, part: String },
     #[error("关节活动度上下限颠倒: {0}")]
     BadLimits(String),
+    #[error("血管折线少于两个点: {0}")]
+    DegenerateVessel(String),
+    #[error("血管 {vessel} 的端点不在部件 {part} 内")]
+    VesselEndOutside { vessel: String, part: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +522,40 @@ mod tests {
         assert_eq!(plan.joints.len(), 10);
         let m = plan.total_mass();
         assert!((m - 80.0).abs() < 5.0, "总质量应在 80kg 附近，实际 {m}");
+    }
+
+    #[test]
+    fn human_01_vessels() {
+        let plan = BodyPlan::from_ron(ASSET_HUMAN_01).unwrap();
+        assert_eq!(plan.vessels.len(), 6);
+        // 不变量 6：动脉床的 flow_share 求和为 1
+        let sum: f32 = plan
+            .vessels
+            .iter()
+            .filter(|v| v.arterial)
+            .map(|v| v.flow_share)
+            .sum();
+        println!("动脉 flow_share 合计 {sum:.4}");
+        assert!((sum - 1.0).abs() < 1e-3, "flow_share 合计应为 1，实际 {sum}");
+
+        let fem = plan.vessel("femoral_l").expect("应该有左股动脉");
+        assert_eq!(fem.to_part, plan.part("thigh_l").map(|p| p.id));
+        assert!(fem.total_len() > 20.0, "股动脉应该够长");
+    }
+
+    #[test]
+    fn subtree_covers_leg() {
+        let plan = BodyPlan::from_ron(ASSET_HUMAN_01).unwrap();
+        let thigh = plan.part("thigh_l").unwrap().id;
+        let names: Vec<&str> = plan
+            .subtree(thigh)
+            .iter()
+            .map(|id| plan.parts[id.index()].name.as_str())
+            .collect();
+        println!("thigh_l 子树 {:?}", names);
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"shin_l"), "小腿应该跟着大腿一起断供");
+        assert!(!names.contains(&"thigh_r"), "不该波及另一条腿");
     }
 
     #[test]

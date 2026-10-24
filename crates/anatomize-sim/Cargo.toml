@@ -8,4 +8,6 @@ description = "世界编排：rapier2d 驱动、固定 tick、ragdoll 组装"
 [dependencies]
 anatomize-core = { path = "../anatomize-core" }
 anatomize-body = { path = "../anatomize-body" }
+anatomize-cut = { path = "../anatomize-cut" }
+anatomize-tissue = { path = "../anatomize-tissue" }
 rapier2d = "0.36.1"

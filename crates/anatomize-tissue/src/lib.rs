@@ -63,7 +63,9 @@ pub use config::{ASSET_TISSUE_CONFIG, KindTable, TissueConfig};
 pub use damage::time_to_hypoxia;
 pub use field::TissueField;
 pub use pressure::{PressureSolver, arterial_inflow, venous_return, wound_flux};
-pub use raster::{Shape, apply_wound, apply_wound_path, rasterize, set_inlet};
+pub use raster::{
+    Shape, apply_wound, apply_wound_path, rasterize, sever_supply, sever_supply_beyond, set_inlet,
+};
 
 /// 每个 texel 的组织类型。建体时烘焙一次，之后不变。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

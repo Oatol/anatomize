@@ -11,11 +11,13 @@ pub mod decomp;
 pub mod intersect;
 pub mod line;
 pub mod split;
+pub mod structure;
 
 pub use decomp::{convex_decompose, convex_hull, signed_area, triangulate};
 pub use intersect::{Crossing, segment_polyline, segment_segment};
 pub use line::Line;
 pub use split::{Fragment, SplitOutcome, split_convex, split_part};
+pub use structure::{StructureReport, VesselDamage, VesselHit, cut_vessels};
 
 use anatomize_core::Vec2;
 
@@ -46,5 +48,23 @@ impl CutSegment {
     /// 切线与一条折线的所有交点，按沿切线的参数排序。
     pub fn crossings(&self, path: &[Vec2]) -> Vec<Crossing> {
         segment_polyline(self.a, self.b, path)
+    }
+
+    /// 世界米制 → 身体局部厘米。
+    ///
+    /// 结构判定和 `BodyPlan` 都在厘米里，物理和渲染在米里。这个转换只该出现在
+    /// 边界上，不该散落在各处——单位搞混是这类项目最容易犯的错。
+    pub fn to_body_frame(&self, origin_m: Vec2, rot: f32) -> CutSegment {
+        let (c, s) = (rot.cos(), rot.sin());
+        let f = |p: Vec2| {
+            let d = p - origin_m;
+            Vec2::new(d.x * c + d.y * s, -d.x * s + d.y * c) * 100.0
+        };
+        CutSegment {
+            a: f(self.a),
+            b: f(self.b),
+            width: self.width * 100.0,
+            speed: self.speed,
+        }
     }
 }

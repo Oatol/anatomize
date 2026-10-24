@@ -4,7 +4,7 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：**M2 完成** — 组织场求解器跑通：出血速率是达西通量算出来的，随 MAP 严格线性。
+> 状态：**M3 完成** — 切断股动脉能被正确识别，下游真的坏死；关节坏了会脱位，肢体挂着而不是飞走。
 
 ![M0 ragdoll](docs/m0-ragdoll.png)
 
@@ -17,6 +17,14 @@
 ![M2 tissue](docs/m2-tissue.png)
 
 <sub>M2 输出。**上排**：大腿横断 90 秒后。压力场几乎均匀（设计如此，组织间连通只有血管床的 1/10），唯一的坑在创口；灌注面板里发黑的是骨芯；出血 4.32 mL/s。**下排**：把左腿血供切断后 1200 秒——灌注归零 → 氧分压从 40 掉到 5 mmHg → 损伤累积到 0.23，整条腿在四个通道上依次塌下去。</sub>
+
+![M3 artery](docs/m3-artery.png)
+
+<sub>M3 输出之一。同一刀，**断口近端还活着、远端死了**。左大腿 y=-25cm 处横断，切面真的穿过了股动脉折线：断口以下的 1574 个 texel 电导清零、灌注归零，20 分钟后氧掉到 3.9 mmHg、损伤累积到 0.25；断口以上和右腿完全不受影响（灌注 0.020 1/s、氧 42.6 mmHg）。这就是"血管是折线而不是抽象边"的收益。</sub>
+
+![M3 joints](docs/m3-joints.png)
+
+<sub>M3 输出之二。左髋从 intact 走到 severed。**第 3 帧是重点**：脱位之后肢体还挂着——黄色的软组织绳子（6cm）把它拉住，它会甩、会拉、会痛，但不会飞走。第 4 帧才是真正的离断：约束全没了，小腿掉下去。</sub>
 
 ---
 
@@ -63,6 +71,7 @@
 cargo run -p anatomize-tools --bin ragdoll       # M0：ragdoll 稳定性
 cargo run -p anatomize-tools --bin cut_demo      # M1：切割与结构求交
 cargo run -p anatomize-tools --bin tissue_demo   # M2：组织场求解器
+cargo run -p anatomize-tools --bin m3_demo       # M3：关节状态机 + 断供
 ```
 
 `ragdoll` headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
@@ -96,6 +105,25 @@ cargo run -p anatomize-tools --bin tissue_demo   # M2：组织场求解器
   拟合 Q = 0.046472·MAP + 0.001293，最大偏离 0.000%
 ```
 
+`m3_demo` 切三刀、掰一个关节，输出两张验收图：
+
+```
+  切法                               命中    断供texel       创口      出血 mL/s
+  大腿横断（穿过股动脉）                 1       1574       44         4.31
+  贴着动脉划过（擦伤）                   1          0       20         2.14
+  浅划（没够到血管）                     0          0       10         1.65
+
+  状态               t(s)   integrity    tether          约束
+  intact            0.0       1.000      1.00    revolute
+  sprained         6.28       0.700      1.00  revolute (loose)
+  subluxed        10.28       0.340      1.00  revolute (very loose)
+  dislocated      12.68       0.148      1.00    rope 6cm
+  severed         19.95       0.128      0.00        none
+```
+
+三刀落在同一条大腿上，唯一的区别是**刀口停在哪里**——这是几何求交相对"能量阈值"的全部意义。
+擦伤只出血不断供（2.14 mL/s，腿还活着）；浅划连血管都没碰到（1.65 mL/s，纯软组织创口）。
+
 不需要窗口、不需要 GPU —— 这是核心与宿主解耦的直接好处。
 
 ## 代码结构
@@ -106,8 +134,8 @@ cargo run -p anatomize-tools --bin tissue_demo   # M2：组织场求解器
 | `anatomize-body` | `BodyPlan` schema、编译、校验 | 否 |
 | `anatomize-tissue` | 组织场：压力 / 灌注 / 氧 / 热 / 损伤（M2） | 否 |
 | `anatomize-physio` | 0D 腔室生理（M4） | 否 |
-| `anatomize-cut` | 多边形裁剪与结构判定（M1） | 否 |
-| `anatomize-sim` | 世界编排、rapier2d 驱动 | 仅 rapier2d |
+| `anatomize-cut` | 多边形裁剪、凸分解、切面 × 血管折线求交（M1/M3） | 否 |
+| `anatomize-sim` | 世界编排、rapier2d 驱动、关节健康 ↔ 约束桥接、断供耦合（M3） | 仅 rapier2d |
 | `anatomize-tools` | headless 实验、帧渲染 | 否 |
 
 前五个 crate 的 `Cargo.toml` 里不允许出现 `bevy` / `wgpu` / `rapier`。
@@ -126,7 +154,7 @@ cargo run -p anatomize-tools --bin tissue_demo   # M2：组织场求解器
 | ✅ M0 | workspace 骨架、rapier2d 直驱、11 部件 ragdoll、固定 tick |
 | ✅ M1 | 多边形裁剪 + 凸分解 + 切面折线（12 测试，含 10000 次 fuzz） |
 | ✅ M2 | 组织场：压力求解 + 灌注 + 创口通量（15 测试，解析解误差 0.003%） |
-| M3 | 关节三级状态机 + 结构求交 |
+| ✅ M3 | 关节三级状态机 + 结构求交（新增 14 测试：5 结构求交 + 4 断供 + 5 真实 rapier 世界的关节集成；全 workspace 54 个） |
 | M4 | 循环 / 呼吸 / 神经闭环 |
 | M5 | 温度 + 消化 + 疼痛 |
 | M6 | 断面视觉 + HUD + 存档 → P0 可玩 |

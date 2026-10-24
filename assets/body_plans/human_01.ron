@@ -194,4 +194,56 @@
             stiffness: 1200.0, damping: 50.0,
         ),
     ],
+
+    // 血管。折线在**身体局部坐标**（cm），端点必须落在对应部件内。
+    //
+    // 这些折线不是为了画血管，是为了**求交**：切割时"切面线段 × 血管折线"
+    // 精确回答"你切断了哪一根、在哪一段"。flow_share 在动脉床内求和 = 1.0，
+    // 保证"切断一根血管，下游灌注按比例下降"有物理意义。
+    //
+    // M3 只建主干了：M4 的循环模型会用 flow_share 把心输出量分配到各区域。
+    vessels: [
+        (
+            name: "carotid",
+            from: heart, to: part("head"),
+            path: [(0.0, 20.0), (0.0, 38.0), (0.0, 52.0)],
+            radius_mm: 5.0, flow_share: 0.15, arterial: true,
+        ),
+        (
+            name: "aorta_torso",
+            from: heart, to: part("torso"),
+            path: [(0.0, 20.0), (0.0, 26.0)],
+            radius_mm: 12.0, flow_share: 0.33, arterial: true,
+        ),
+        (
+            name: "brachial_l",
+            from: heart, to: part("upper_arm_l"),
+            path: [(0.0, 20.0), (-12.0, 24.0), (-19.0, 26.0), (-19.0, 20.0)],
+            radius_mm: 4.0, flow_share: 0.06, arterial: true,
+        ),
+        (
+            name: "brachial_r",
+            from: heart, to: part("upper_arm_r"),
+            path: [(0.0, 20.0), (12.0, 24.0), (19.0, 26.0), (19.0, 20.0)],
+            radius_mm: 4.0, flow_share: 0.06, arterial: true,
+        ),
+        (
+            name: "femoral_l",
+            from: heart, to: part("thigh_l"),
+            path: [
+                (0.0, 20.0), (0.0, 4.0), (-4.0, -8.0), (-8.0, -14.0),
+                (-8.0, -20.0), (-8.0, -30.0),
+            ],
+            radius_mm: 7.0, flow_share: 0.20, arterial: true,
+        ),
+        (
+            name: "femoral_r",
+            from: heart, to: part("thigh_r"),
+            path: [
+                (0.0, 20.0), (0.0, 4.0), (4.0, -8.0), (8.0, -14.0),
+                (8.0, -20.0), (8.0, -30.0),
+            ],
+            radius_mm: 7.0, flow_share: 0.20, arterial: true,
+        ),
+    ],
 )
