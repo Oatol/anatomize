@@ -106,7 +106,7 @@ impl PressureSolver {
             for y in 0..h {
                 for x in 0..w {
                     let i = y * w + x;
-                    if f.wound[i] {
+                    if f.is_open_wound(i) {
                         self.next[i] = 0.0;
                         continue;
                     }
@@ -189,21 +189,22 @@ pub fn wound_flux(f: &TissueField, map: f32) -> f32 {
     for y in 0..h {
         for x in 0..w {
             let i = y * w + x;
-            if !f.wound[i] {
+            // 被压闭的创口不是零压汇，一分钱也不漏
+            if !f.is_open_wound(i) {
                 continue;
             }
             q += f.c_art[i] * map;
             let k = f.conductance[i];
-            if x + 1 < w && !f.wound[i + 1] {
+            if x + 1 < w && !f.is_open_wound(i + 1) {
                 q += harmonic(k, f.conductance[i + 1]) * f.pressure[i + 1];
             }
-            if x > 0 && !f.wound[i - 1] {
+            if x > 0 && !f.is_open_wound(i - 1) {
                 q += harmonic(k, f.conductance[i - 1]) * f.pressure[i - 1];
             }
-            if y + 1 < h && !f.wound[i + w] {
+            if y + 1 < h && !f.is_open_wound(i + w) {
                 q += harmonic(k, f.conductance[i + w]) * f.pressure[i + w];
             }
-            if y > 0 && !f.wound[i - w] {
+            if y > 0 && !f.is_open_wound(i - w) {
                 q += harmonic(k, f.conductance[i - w]) * f.pressure[i - w];
             }
         }

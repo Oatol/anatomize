@@ -1,0 +1,65 @@
+// 生理参数。改这里不用重编译。
+//
+// 标定基准：静息、仰卧、室温 22°C、血容量 5000 mL。
+// 目标 MAP 93 / CO 5.0 / HR 72 / SV 69.4 / SaO2 0.97 / DO2 ~975。
+//
+// svr_base 与 rvr_base 不是自由参数：
+//   rvr_base = (pms_base - cvp) / co = (8 - 2) / 5 = 1.2
+//   svr_base = (map - cvp) / co      = (93 - 2) / 5 = 18.2
+// 改一个必须重算另一个，否则健康人一出生就高血压。
+(
+    // --- 容量 ---
+    blood_volume_ml: 5000.0,
+    hemoglobin: 15.0,
+    insensible_ml_s: 0.012,       // 约 1 L/天
+
+    // --- 压力反射 ---
+    map_setpoint: 93.0,
+    tone_base: 0.30,
+    baroreflex_gain: 1.2,         // 高压感受器：看 MAP
+    baroreflex_vol_gain: 4.0,     // 低压感受器：看容量（失血早期的心率反应全靠它）
+    baroreflex_tau: 3.0,
+    tone_min: 0.0,
+    tone_max: 1.0,
+
+    // --- 效应器 ---
+    hr_base: 72.0,
+    hr_gain: 1.20,                // tone 1.0 时 HR = 72·(1+1.2·0.7) = 132
+    hr_temp_gain: 0.35,
+    svr_base: 18.2,
+    svr_gain: 0.857,              // tone 1.0 时 SVR = 18.2·1.6 = 29.1
+    rvr_base: 1.2,
+    rvr_gain: 0.15,               // 远小于 svr_gain：静脉收缩主要是抬高充盈压
+    pms_base: 8.0,
+    cvp: 2.0,
+    contract_flat: 20.0,          // MAP < 20 收缩力到底
+    contract_full: 55.0,          // MAP > 55 收缩力满
+    contract_floor: 0.5,
+
+    // --- 呼吸 ---
+    pao2_room: 95.0,
+    hill_n: 2.7,
+    hill_p50: 26.6,
+    vo2_base: 250.0,
+    ero2_anaerobic: 0.60,
+
+    // --- 神经 ---
+    consciousness_tau: 6.0,
+    pto2_flat: 8.0,
+    pto2_wake: 25.0,
+    map_flat: 40.0,
+    map_wake: 65.0,
+    glucose_flat: 1.5,
+    glucose_wake: 3.0,
+    temp_flat: 30.0,
+    temp_wake: 34.0,
+
+    // --- 代谢 ---
+    glucose_base: 5.0,
+    glucose_use: 0.004,           // mmol/(L·s)，空腹稳态落在 4.82
+    temp_setpoint: 37.0,
+    temp_tau: 5.0,
+
+    // --- 死亡 ---
+    arrest_death_s: 60.0,
+)

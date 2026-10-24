@@ -19,9 +19,15 @@ use anatomize_body::{BodyPlan, BoneKind, Layer};
 use anatomize_core::{PartId, Vec2};
 use anatomize_cut::{CutSegment, StructureReport, cut_vessels};
 use anatomize_tissue::{
-    Shape, TissueConfig, TissueField, TissueSim, TissueKind, apply_wound_path, rasterize,
-    sever_supply_beyond,
+    Shape, TissueConfig, TissueField, TissueKind, TissueSim, add_stump, apply_wound_path,
+    rasterize, sever_supply_beyond,
 };
+
+/// 静息心输出量（mL/s）。5 L/min。
+pub const NOMINAL_CARDIAC_OUTPUT_ML_S: f32 = 83.33;
+
+/// 静息平均动脉压（mmHg）。和 `physio.ron` 的 `map_setpoint` 是同一个数。
+pub const NOMINAL_MAP: f32 = 93.0;
 
 /// 把 `BodyPlan` 的 `Layer` 映射到组织类型。
 pub fn layer_kind(l: Layer) -> TissueKind {
@@ -72,6 +78,11 @@ pub struct SeverOutcome {
     pub wound_texels: usize,
     /// 断供的 texel 数。
     pub starved_texels: usize,
+    /// 这一刀给断端摊上的总电导（mL/(s·mmHg)）。
+    ///
+    /// 它决定了"立刻"出多少血：`q ≈ c_stump · MAP`。几何创口通量只是毛细血管
+    /// 那一层，和它并联。
+    pub stump_conductance: f32,
 }
 
 impl SeverOutcome {
@@ -91,30 +102,63 @@ impl SeverOutcome {
 /// 在身体局部厘米坐标里切一刀，把后果写进组织场。
 ///
 /// `cut` 必须已经是**身体局部厘米**（用 [`CutSegment::to_body_frame`] 转）。
-/// 三步顺序是硬约束：
+/// 四步顺序是硬约束：
 ///
 /// 1. 结构判定（先知道断了什么、断在哪儿）
 /// 2. 开创口（沿切面光栅化，`p = 0`）
-/// 3. 下游断供（`k0 = 0`，只清断口**远端**那一半，且跳过创口 texel）
+/// 3. 断端电导（`c_stump = flow_share·CO/MAP`，摊在断口附近的创口 texel 上）
+/// 4. 下游断供（`k0 = 0`，只清断口**远端**那一半，且跳过创口 texel）
 ///
-/// 第 2 步必须在第 3 步之前：`sever_supply` 会跳过 `wound` texel（断端接的是
+/// 第 2 步必须在第 4 步之前：`sever_supply` 会跳过 `wound` texel（断端接的是
 /// 动脉侧），所以得先把创口标出来，否则整条刀口连断端一起被清零，结果是
 /// "腿断了却不流血"。
 ///
-/// 第 3 步只清远端：断口近端的组织还连着心、还灌着血。清整块会丢掉"断在
+/// 第 4 步只清远端：断口近端的组织还连着心、还灌着血。清整块会丢掉"断在
 /// 近端还是远端"这个区别——而那正是折线血管建模的收益所在。
 ///
-/// 注意这个函数**不解压力场**：它只把后果写进场里（`wound` 标志、`k0`）。
+/// 注意这个函数**不解压力场**：它只把后果写进场里（`wound` 标志、`k0`、`stump`）。
 /// 想立刻知道"流多少血"，得接着调 `TissueSim::warmup(map)` 再读
 /// `wound_flux`——不预热直接读，读到的是上一帧的解，数值差两个数量级。
 pub fn apply_cut(plan: &BodyPlan, field: &mut TissueField, cut: &CutSegment) -> SeverOutcome {
+    apply_cut_scaled(plan, field, cut, NOMINAL_CARDIAC_OUTPUT_ML_S / NOMINAL_MAP)
+}
+
+/// 同上，但显式给"每单位 flow_share 对应多少断端电导"（mL/(s·mmHg)）。
+///
+/// 标定值 `CO_静息/MAP_静息 = 83.33/93 ≈ 0.896`。这样六根动脉全断时总断端
+/// 电导对应 `1.0 × CO`——出血速率不可能超过心输出量，这条守恒是白送的。
+pub fn apply_cut_scaled(
+    plan: &BodyPlan,
+    field: &mut TissueField,
+    cut: &CutSegment,
+    c_per_flow_share: f32,
+) -> SeverOutcome {
     let report = cut_vessels(cut, &plan.vessels);
 
     // 2. 创口：半径取刀具半宽，最少 1 个 texel
     let r_cm = (cut.width * 0.5).max(field.texel_cm * 0.5);
     let wound_texels = apply_wound_path(field, &[cut.a, cut.b], r_cm);
 
-    // 3. 下游断供：每根断掉的动脉，沿它的流向清掉断口之后的组织
+    // 3. 断端电导：每根断掉的动脉，在断口附近摊上它自己的口径
+    let mut stump_conductance = 0.0f32;
+    for hit in report.severed() {
+        let Some(v) = plan.vessels.iter().find(|v| v.id == hit.vessel) else {
+            continue;
+        };
+        if !v.arterial {
+            continue;
+        }
+        let c = v.flow_share.max(0.0) * c_per_flow_share;
+        if c <= 0.0 {
+            continue;
+        }
+        // 搜索半径：刀具半宽 + 一个 texel，刚好覆盖断口那一段创口带
+        let r = r_cm + field.texel_cm;
+        add_stump(field, hit.point, r, c);
+        stump_conductance += c;
+    }
+
+    // 4. 下游断供：每根断掉的动脉，沿它的流向清掉断口之后的组织
     let mut starved: Vec<PartId> = Vec::new();
     let mut starved_texels = 0;
     for hit in report.severed() {
@@ -140,6 +184,7 @@ pub fn apply_cut(plan: &BodyPlan, field: &mut TissueField, cut: &CutSegment) -> 
         starved,
         wound_texels,
         starved_texels,
+        stump_conductance,
     }
 }
 

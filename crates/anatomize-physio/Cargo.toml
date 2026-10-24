@@ -7,3 +7,5 @@ description = "0D 腔室生理：循环、呼吸、代谢、神经"
 
 [dependencies]
 anatomize-core = { path = "../anatomize-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+ron = "0.12.2"

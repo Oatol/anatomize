@@ -12,8 +12,8 @@
 //! 第 3 步是"涌现的皮肤"：不靠作者画，靠"谁挨着空气谁是皮肤"。这样接缝
 //! （躯干与骨盆之间）不会莫名多出一层皮。
 
-use crate::TissueKind;
 use crate::TissueField;
+use crate::TissueKind;
 use crate::config::TissueConfig;
 use anatomize_core::Vec2;
 
@@ -221,6 +221,54 @@ pub fn set_inlet(f: &mut TissueField, path: &[Vec2], radius_cm: f32) -> usize {
         }
     }
     n
+}
+
+/// 在断口附近的**创口 texel** 上摊一份断端电导（mL/(s·mmHg)）。
+///
+/// `point` 是血管断口的位置（身体局部 cm），`radius_cm` 是搜索半径。
+/// 只有**开放创口** texel 会分到——创口没开到这里就说明这一刀其实没断到血管
+/// （正常情况下不会发生，因为 `point` 来自切面与血管折线的交点）。
+///
+/// 分摊而不是全塞给最近的那一个 texel：一个 texel 只有 0.25 cm²，把主动脉的
+/// 全部流量压在它身上会让那个点的压力解算变成单点奇异，`wound_flux` 倒是对的，
+/// 但周围组织的压力场会被拽歪。
+///
+/// 返回分到电导的 texel 数。
+pub fn add_stump(f: &mut TissueField, point: Vec2, radius_cm: f32, total_c: f32) -> usize {
+    if total_c <= 0.0 {
+        return 0;
+    }
+    let mut hits: Vec<(f32, usize)> = Vec::new();
+    for i in 0..f.len() {
+        if !f.is_open_wound(i) {
+            continue;
+        }
+        let d = (f.center_of(i) - point).length();
+        if d <= radius_cm {
+            hits.push((d, i));
+        }
+    }
+    if hits.is_empty() {
+        // 兜底：取最近的开放创口 texel。半径给小了也不至于"断了却不流血"。
+        let mut best: Option<(f32, usize)> = None;
+        for i in 0..f.len() {
+            if !f.is_open_wound(i) {
+                continue;
+            }
+            let d = (f.center_of(i) - point).length();
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, i));
+            }
+        }
+        let Some((_, i)) = best else { return 0 };
+        f.stump[i] += total_c;
+        return 1;
+    }
+    let share = total_c / hits.len() as f32;
+    for (_, i) in &hits {
+        f.stump[*i] += share;
+    }
+    hits.len()
 }
 
 /// 切断一片区域的血供：把落在区域内的组织 texel 的 `k0` 清零。

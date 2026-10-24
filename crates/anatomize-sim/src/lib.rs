@@ -10,7 +10,10 @@ pub mod sever;
 pub use sever::{SeverOutcome, apply_cut, build_tissue, layer_kind};
 
 use anatomize_body::{BodyPlan, JointHealth, JointLoad, JointParams, JointState};
-use anatomize_core::{DT, JointId, PartId, Tick, Vec2};
+use anatomize_core::time::dt_of;
+use anatomize_core::{DT, JointId, PartId, TISSUE_HZ, Tick, Vec2};
+use anatomize_physio::{Physio, PhysioInput};
+use anatomize_tissue::{TissueConfig, TissueSim};
 use rapier2d::prelude::*;
 
 /// RON 用厘米，物理用米。
@@ -136,6 +139,10 @@ pub struct Sim {
     pub damage: JointParams,
     /// 累计发生过的状态迁移，按发生顺序。HUD / 日志 / 验收图都读它。
     pub injuries: Vec<(JointId, JointState, f32)>,
+    /// 组织场。`None` 表示这具身体没挂场（纯 ragdoll，不会出血也不会缺氧）。
+    pub tissue: Option<TissueSim>,
+    /// 0D 生理。
+    pub physio: Physio,
 }
 
 impl Sim {
@@ -146,12 +153,7 @@ impl Sim {
     }
 
     /// 同上，但显式指定损伤参数（测试与参数扫描用）。
-    pub fn spawn_with(
-        plan: BodyPlan,
-        origin: Vec2,
-        ground_y: f32,
-        damage: JointParams,
-    ) -> Self {
+    pub fn spawn_with(plan: BodyPlan, origin: Vec2, ground_y: f32, damage: JointParams) -> Self {
         let mut physics = Physics::new();
 
         // 地面
@@ -246,6 +248,8 @@ impl Sim {
             ground,
             damage,
             injuries: Vec::new(),
+            tissue: None,
+            physio: Physio::asset(),
         }
     }
 
@@ -295,6 +299,72 @@ impl Sim {
         // 载荷必须在刚解完的这一步读，否则读到的是上一帧的约束冲量
         self.update_joint_health();
         self.tick.advance();
+        self.step_physio();
+    }
+
+    // -----------------------------------------------------------------------
+    // L2 组织场 ↔ L4 生理：M4 的那条闭环
+    // -----------------------------------------------------------------------
+
+    /// 给这具身体挂一张组织场，并按当前 MAP 预热。
+    ///
+    /// 不预热会得到一整套假数：`p = 0` 冷启动时 8 次 Jacobi 只把边界信息推进
+    /// 8 个 texel，第一秒的灌注和出血都是错的。
+    pub fn attach_tissue(&mut self, cfg: &TissueConfig) {
+        let mut sim = build_tissue(&self.plan, cfg);
+        sim.warmup(self.physio.bus.map);
+        self.tissue = Some(sim);
+    }
+
+    /// 切一刀（身体局部厘米坐标），把后果写进组织场并立刻重解压力场。
+    ///
+    /// 返回 `None` 表示这具身体没挂组织场——那样切割只是几何操作，不出血。
+    pub fn cut(&mut self, cut: &anatomize_cut::CutSegment) -> Option<SeverOutcome> {
+        let map = self.physio.bus.map;
+        let tissue = self.tissue.as_mut()?;
+        let out = apply_cut(&self.plan, &mut tissue.field, cut);
+        tissue.warmup(map);
+        Some(out)
+    }
+
+    /// 按压 / 松开创口。返回按压后的出血速率（mL/s）。
+    pub fn press_wound(&mut self, on: bool) -> f32 {
+        let map = self.physio.bus.map;
+        match self.tissue.as_mut() {
+            Some(t) => t.set_wound_clamped(on, map),
+            None => 0.0,
+        }
+    }
+
+    /// 当前创口出血速率（mL/s）。没有组织场时为 0。
+    pub fn hemorrhage_ml_s(&self) -> f32 {
+        self.tissue.as_ref().map_or(0.0, |t| t.step.wound_flux)
+    }
+
+    /// 一个物理 tick 的 L2 → L4 → L2 闭环。
+    ///
+    /// 顺序是硬约束：
+    ///
+    /// ```text
+    /// 1. 组织场用上一 tick 的 MAP 解压力场      （L4 → L2）
+    /// 2. 读出创口通量 / 组织氧 / 核心温度        （L2 → L4）
+    /// 3. 生理层推进，算出新的 MAP                （L4 内部）
+    /// ```
+    ///
+    /// 环路延迟恰好一个组织 tick（50ms），而环里最慢的时间常数是压力反射的 3s，
+    /// 所以不会振铃。**反过来写（先算生理再解场）会引入两个 tick 的延迟，
+    /// 在失血后期表现为 MAP 和出血速率互相追着抖。**
+    fn step_physio(&mut self) {
+        let mut input = PhysioInput::none();
+        if let Some(t) = self.tissue.as_mut() {
+            if self.tick.tissue_due() {
+                t.step(self.physio.bus.map, dt_of(TISSUE_HZ));
+            }
+            input.hemorrhage_ml_s = t.step.wound_flux;
+            input.tissue_o2 = Some(t.step.mean_o2);
+            input.core_temp = Some(t.step.core_temp);
+        }
+        self.physio.step(input, self.tick);
     }
 
     // -----------------------------------------------------------------------

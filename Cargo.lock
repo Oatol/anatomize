@@ -46,6 +46,8 @@ name = "anatomize-physio"
 version = "0.1.0"
 dependencies = [
  "anatomize-core",
+ "ron",
+ "serde",
 ]
 
 [[package]]
@@ -55,6 +57,7 @@ dependencies = [
  "anatomize-body",
  "anatomize-core",
  "anatomize-cut",
+ "anatomize-physio",
  "anatomize-tissue",
  "rapier2d",
 ]

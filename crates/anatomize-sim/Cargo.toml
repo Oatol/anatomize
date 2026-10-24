@@ -10,4 +10,5 @@ anatomize-core = { path = "../anatomize-core" }
 anatomize-body = { path = "../anatomize-body" }
 anatomize-cut = { path = "../anatomize-cut" }
 anatomize-tissue = { path = "../anatomize-tissue" }
+anatomize-physio = { path = "../anatomize-physio" }
 rapier2d = "0.36.1"

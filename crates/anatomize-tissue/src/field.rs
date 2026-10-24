@@ -28,8 +28,27 @@ pub struct TissueField {
     // --- 边界 ---
     /// 创口 texel：压力钉死在 0（通向大气）。
     pub wound: Vec<bool>,
+    /// 创口被压闭：`wound` 仍然为真（记录"这里开过刀"），但**不再是开放边界**。
+    ///
+    /// 按压创口在物理上就是"把通向大气的那条通道捏死"：断端重新贴回组织，
+    /// 电导回到正常血管床水平，压力不再是 0。于是 `wound_flux` 归零——
+    /// 这不是特判，是同一个方程在另一组边界条件下的解。
+    ///
+    /// 松开就恢复，因为 `wound` 没被抹掉。
+    pub clamped: Vec<bool>,
     /// 动脉入口 texel：压力钉死在 MAP。M3 的动脉树会用它。
     pub inlet: Vec<bool>,
+    /// **断端电导**（mL/(s·mmHg)）：这一刀砍断的血管自己的口径。
+    ///
+    /// `wound_vessel_boost` 只是一个统一的放大倍数，它不知道被砍断的是主动脉
+    /// 还是脚趾上的一根小动脉。真正决定出血量的是**血管本身能过多少血**：
+    /// 一根 12mm 的主动脉占心输出量的 33%，一根 7mm 的股动脉占 20%。
+    ///
+    /// 所以断端电导由解剖图给：`c_stump = flow_share · CO_静息 / MAP_静息`。
+    /// 这样"把所有动脉都砍断"恰好等于心输出量——不是巧合，是守恒。
+    ///
+    /// 只在**开放**创口 texel 上生效；压闭创口时它随 `c_art` 一起消失。
+    pub stump: Vec<f32>,
 
     // --- 动态层 ---
     /// 组织内血液驱动压（mmHg）。
@@ -65,7 +84,9 @@ impl TissueField {
             kind: vec![TissueKind::Outside; n],
             k0: vec![0.0; n],
             wound: vec![false; n],
+            clamped: vec![false; n],
             inlet: vec![false; n],
+            stump: vec![0.0; n],
             pressure: vec![0.0; n],
             bed: vec![0.0; n],
             conductance: vec![0.0; n],
@@ -115,6 +136,27 @@ impl TissueField {
             return None;
         }
         Some(self.idx(lx as u32, ly as u32))
+    }
+
+    /// 这个 texel 是不是**开放的**创口（敞在大气里）。
+    ///
+    /// 求解器、`wound_flux`、电导刷新三处都必须问这一个问题，否则"按压止血"
+    /// 会在某一处漏掉，表现为"按住了但还在流血"。
+    #[inline]
+    pub fn is_open_wound(&self, i: usize) -> bool {
+        self.wound[i] && !self.clamped[i]
+    }
+
+    /// 按压 / 松开所有创口。返回被影响的 texel 数。
+    pub fn set_wound_clamped(&mut self, on: bool) -> usize {
+        let mut n = 0;
+        for i in 0..self.len() {
+            if self.wound[i] {
+                self.clamped[i] = on;
+                n += 1;
+            }
+        }
+        n
     }
 
     /// 右/上/左/下的邻居索引，越界或越出场边界返回 None。
@@ -212,6 +254,8 @@ impl TissueField {
     /// （`wound_vessel_boost`，代表"这一刀砍断的是一根大血管，不是一片毛细血管"），
     /// **静脉侧归零**（断端不回血）。这样"动脉流入 = 静脉回流 + 出血"这条
     /// 守恒式才能成立——放大的那部分血来自上游动脉，不是凭空出现的。
+    ///
+    /// 被压闭的创口不走这个分支：断端贴回去了，它就是一个普通 texel。
     pub fn update_conductance(&mut self, cfg: &TissueConfig) {
         let n = cfg.conductance_falloff;
         let share = cfg.arterial_share;
@@ -220,8 +264,10 @@ impl TissueField {
             let k = self.k0[i] * (1.0 - self.damage[i].clamp(0.0, 1.0)).powf(n);
             self.bed[i] = k;
             self.conductance[i] = k * cfg.k_inter_ratio;
-            if self.wound[i] {
-                self.c_art[i] = k * share * boost;
+            if self.is_open_wound(i) {
+                // 断端 = 敞开的血管腔。它和这一刀顺带切开的毛细血管床是**并联**的，
+                // 所以两项相加，不是取大。
+                self.c_art[i] = k * share * boost + self.stump[i];
                 self.c_ven[i] = 0.0;
             } else {
                 self.c_art[i] = k * share;

@@ -28,3 +28,7 @@ path = "src/bin/tissue_demo.rs"
 [[bin]]
 name = "m3_demo"
 path = "src/bin/m3_demo.rs"
+
+[[bin]]
+name = "m4_demo"
+path = "src/bin/m4_demo.rs"

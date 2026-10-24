@@ -64,7 +64,8 @@ pub use damage::time_to_hypoxia;
 pub use field::TissueField;
 pub use pressure::{PressureSolver, arterial_inflow, venous_return, wound_flux};
 pub use raster::{
-    Shape, apply_wound, apply_wound_path, rasterize, sever_supply, sever_supply_beyond, set_inlet,
+    Shape, add_stump, apply_wound, apply_wound_path, rasterize, set_inlet, sever_supply,
+    sever_supply_beyond,
 };
 
 /// 每个 texel 的组织类型。建体时烘焙一次，之后不变。
@@ -135,6 +136,8 @@ pub struct TissueStep {
     pub mean_damage: f32,
     /// 动脉端总流入（mL/s）。
     pub arterial_inflow: f32,
+    /// 静脉端总回流（mL/s）。稳态下 `arterial_inflow = venous_return + wound_flux`。
+    pub venous_return: f32,
 }
 
 /// 组织场 + 求解器 + 步进逻辑的封装。
@@ -228,7 +231,26 @@ impl TissueSim {
             core_temp: self.field.core_mean(&self.field.temp, 2.0),
             mean_damage: self.field.mean(&self.field.damage),
             arterial_inflow: arterial_inflow(&self.field, map),
+            venous_return: venous_return(&self.field, self.cfg.p_venous),
         };
+    }
+
+    /// 按压 / 松开所有创口，并立刻重解压力场。
+    ///
+    /// 必须立刻重解：按压是玩家按下去的那一瞬间就要看到血停的，等一个组织
+    /// tick（50ms）虽然看不出来，但"按住之后还要等预热"这种手感不能留。
+    /// 返回按压后的出血速率（mL/s），`map` 是当前平均动脉压。
+    pub fn set_wound_clamped(&mut self, on: bool, map: f32) -> f32 {
+        self.field.set_wound_clamped(on);
+        self.warmup(map);
+        self.step.wound_flux
+    }
+
+    /// 当前开放的创口 texel 数。
+    pub fn open_wound_texels(&self) -> usize {
+        (0..self.field.len())
+            .filter(|i| self.field.is_open_wound(*i))
+            .count()
     }
 
     pub fn wound_flux(&self, map: f32) -> f32 {
