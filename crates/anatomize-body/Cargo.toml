@@ -1,0 +1,12 @@
+[package]
+name = "anatomize-body"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "人体定义：BodyPlan schema、编译与校验"
+
+[dependencies]
+anatomize-core = { path = "../anatomize-core" }
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.21"

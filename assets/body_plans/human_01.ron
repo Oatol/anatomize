@@ -1,0 +1,197 @@
+// human_01 — M0 用的最小人体。
+//
+// 单位：厘米，y 轴向上，原点在骨盆中心附近。
+// 多边形是部件局部坐标（以部件中心为原点），必须凸、逆时针。
+// 关节锚点分别落在两端部件的局部坐标里，装配后必须重合。
+//
+// 11 部件 / 10 关节 / 79.8 kg
+
+(
+    id: "human_01",
+    bounds: ((-32.0, -70.0), (32.0, 68.0)),
+
+    parts: [
+        (
+            name: "pelvis",
+            parent: None,
+            offset: (0.0, -7.0),
+            mass: 10.0,
+            polygon: [(-13.0, -9.0), (13.0, -9.0), (13.0, 9.0), (-13.0, 9.0)],
+            bone: pelvis,
+            layer: muscle,
+        ),
+        (
+            name: "torso",
+            parent: Some("pelvis"),
+            offset: (0.0, 20.0),
+            mass: 30.0,
+            polygon: [
+                (-14.0, -22.0), (14.0, -22.0), (17.0, 8.0),
+                (15.0, 25.0), (-15.0, 25.0), (-17.0, 8.0),
+            ],
+            bone: spine,
+            layer: muscle,
+        ),
+        (
+            name: "head",
+            parent: Some("torso"),
+            offset: (0.0, 52.0),
+            mass: 5.0,
+            polygon: [
+                (8.31, 3.44), (3.44, 8.31), (-3.44, 8.31), (-8.31, 3.44),
+                (-8.31, -3.44), (-3.44, -8.31), (3.44, -8.31), (8.31, -3.44),
+            ],
+            bone: skull,
+            layer: muscle,
+        ),
+
+        (
+            name: "upper_arm_l",
+            parent: Some("torso"),
+            offset: (-19.0, 25.0),
+            mass: 2.6,
+            polygon: [(-4.0, -13.0), (4.0, -13.0), (4.0, 13.0), (-4.0, 13.0)],
+            bone: humerus,
+            layer: muscle,
+        ),
+        (
+            name: "forearm_l",
+            parent: Some("upper_arm_l"),
+            offset: (-19.0, 0.0),
+            mass: 1.8,
+            polygon: [(-3.5, -12.0), (3.5, -12.0), (3.5, 12.0), (-3.5, 12.0)],
+            bone: radius,
+            layer: muscle,
+        ),
+        (
+            name: "upper_arm_r",
+            parent: Some("torso"),
+            offset: (19.0, 25.0),
+            mass: 2.6,
+            polygon: [(-4.0, -13.0), (4.0, -13.0), (4.0, 13.0), (-4.0, 13.0)],
+            bone: humerus,
+            layer: muscle,
+        ),
+        (
+            name: "forearm_r",
+            parent: Some("upper_arm_r"),
+            offset: (19.0, 0.0),
+            mass: 1.8,
+            polygon: [(-3.5, -12.0), (3.5, -12.0), (3.5, 12.0), (-3.5, 12.0)],
+            bone: radius,
+            layer: muscle,
+        ),
+
+        (
+            name: "thigh_l",
+            parent: Some("pelvis"),
+            offset: (-8.0, -27.0),
+            mass: 9.0,
+            polygon: [(-5.5, -13.0), (5.5, -13.0), (5.5, 13.0), (-5.5, 13.0)],
+            bone: femur,
+            layer: muscle,
+        ),
+        (
+            name: "shin_l",
+            parent: Some("thigh_l"),
+            offset: (-8.0, -53.0),
+            mass: 4.0,
+            polygon: [(-4.5, -13.0), (4.5, -13.0), (4.5, 13.0), (-4.5, 13.0)],
+            bone: tibia,
+            layer: muscle,
+        ),
+        (
+            name: "thigh_r",
+            parent: Some("pelvis"),
+            offset: (8.0, -27.0),
+            mass: 9.0,
+            polygon: [(-5.5, -13.0), (5.5, -13.0), (5.5, 13.0), (-5.5, 13.0)],
+            bone: femur,
+            layer: muscle,
+        ),
+        (
+            name: "shin_r",
+            parent: Some("thigh_r"),
+            offset: (8.0, -53.0),
+            mass: 4.0,
+            polygon: [(-4.5, -13.0), (4.5, -13.0), (4.5, 13.0), (-4.5, 13.0)],
+            bone: tibia,
+            layer: muscle,
+        ),
+    ],
+
+    joints: [
+        (
+            name: "waist",
+            a: "pelvis", b: "torso",
+            anchor_a: (0.0, 7.0), anchor_b: (0.0, -20.0),
+            limits: (-0.30, 0.30),
+            stiffness: 1200.0, damping: 60.0,
+        ),
+        (
+            name: "neck",
+            a: "torso", b: "head",
+            anchor_a: (0.0, 24.0), anchor_b: (0.0, -8.0),
+            limits: (-0.60, 0.50),
+            stiffness: 700.0, damping: 30.0,
+        ),
+
+        (
+            name: "shoulder_l",
+            a: "torso", b: "upper_arm_l",
+            anchor_a: (-15.5, 18.0), anchor_b: (3.5, 13.0),
+            limits: (-2.60, 2.60),
+            stiffness: 500.0, damping: 25.0,
+        ),
+        (
+            name: "elbow_l",
+            a: "upper_arm_l", b: "forearm_l",
+            anchor_a: (0.0, -13.0), anchor_b: (0.0, 12.0),
+            limits: (-2.40, 0.10),
+            stiffness: 400.0, damping: 20.0,
+        ),
+        (
+            name: "shoulder_r",
+            a: "torso", b: "upper_arm_r",
+            anchor_a: (15.5, 18.0), anchor_b: (-3.5, 13.0),
+            limits: (-2.60, 2.60),
+            stiffness: 500.0, damping: 25.0,
+        ),
+        (
+            name: "elbow_r",
+            a: "upper_arm_r", b: "forearm_r",
+            anchor_a: (0.0, -13.0), anchor_b: (0.0, 12.0),
+            limits: (-2.40, 0.10),
+            stiffness: 400.0, damping: 20.0,
+        ),
+
+        (
+            name: "hip_l",
+            a: "pelvis", b: "thigh_l",
+            anchor_a: (-8.0, -7.0), anchor_b: (0.0, 13.0),
+            limits: (-1.20, 0.70),
+            stiffness: 1500.0, damping: 70.0,
+        ),
+        (
+            name: "knee_l",
+            a: "thigh_l", b: "shin_l",
+            anchor_a: (0.0, -13.0), anchor_b: (0.0, 13.0),
+            limits: (-2.20, 0.05),
+            stiffness: 1200.0, damping: 50.0,
+        ),
+        (
+            name: "hip_r",
+            a: "pelvis", b: "thigh_r",
+            anchor_a: (8.0, -7.0), anchor_b: (0.0, 13.0),
+            limits: (-1.20, 0.70),
+            stiffness: 1500.0, damping: 70.0,
+        ),
+        (
+            name: "knee_r",
+            a: "thigh_r", b: "shin_r",
+            anchor_a: (0.0, -13.0), anchor_b: (0.0, 13.0),
+            limits: (-2.20, 0.05),
+            stiffness: 1200.0, damping: 50.0,
+        ),
+    ],
+)

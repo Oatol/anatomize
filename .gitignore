@@ -29,3 +29,6 @@ desktop.ini
 /logs/
 /screenshots/
 *.log
+
+# 运行时输出
+/out/

@@ -4,7 +4,11 @@
 
 切开一个人，你能看见血从压力最高的地方喷出来，看见伤口下游的组织一点点变白、变紫、坏死，看见他心跳加快、呼吸变浅，然后软下去。
 
-> 状态：v0.2 设计定稿，代码尚未开始（M0 待启动）。
+> 状态：**M0 完成** — workspace 骨架 + rapier2d 直驱 + 11 部件 ragdoll，headless 跑通并渲染出帧。
+
+![M0 ragdoll](docs/m0-ragdoll.png)
+
+<sub>M0 输出：11 部件 / 10 关节 / 79.8 kg。落地静止后关节最大间隙 0.85 mm。</sub>
 
 ---
 
@@ -45,6 +49,37 @@
 
 一个数值只能表达"坏了多少"，四个量能表达"坏了之后是什么状态"——脱臼、复位、慢性不稳，都能演。
 
+## 快速开始
+
+```bash
+cargo run -p anatomize-tools --bin ragdoll
+```
+
+headless 跑 600 tick（10 秒），在 `out/` 下写出若干帧，并打印稳定性判定：
+
+```
+关节最大间隙 0.847 mm（阈值 2.0 mm）-> PASS
+末态动能 0.0000 J（阈值 0.05 J，说明已静止）-> PASS
+无 NaN -> PASS
+最大速度 0.000 m/s（阈值 50 m/s）-> PASS
+```
+
+不需要窗口、不需要 GPU —— 这是核心与宿主解耦的直接好处。
+
+## 代码结构
+
+| Crate | 职责 | 依赖引擎/物理？ |
+|---|---|---|
+| `anatomize-core` | ID、时间、确定性随机、伤害事件 | 否 |
+| `anatomize-body` | `BodyPlan` schema、编译、校验 | 否 |
+| `anatomize-tissue` | 组织场（M2） | 否 |
+| `anatomize-physio` | 0D 腔室生理（M4） | 否 |
+| `anatomize-cut` | 多边形裁剪与结构判定（M1） | 否 |
+| `anatomize-sim` | 世界编排、rapier2d 驱动 | 仅 rapier2d |
+| `anatomize-tools` | headless 实验、帧渲染 | 否 |
+
+前五个 crate 的 `Cargo.toml` 里不允许出现 `bevy` / `wgpu` / `rapier`。
+
 ## 文档
 
 | 文件 | 内容 |
@@ -56,7 +91,7 @@
 
 | 阶段 | 交付物 |
 |---|---|
-| M0 | workspace 骨架、rapier2d 直驱、9 部件 ragdoll、固定 tick |
+| ✅ M0 | workspace 骨架、rapier2d 直驱、11 部件 ragdoll、固定 tick |
 | M1 | 多边形裁剪 + 凸分解 + 切面折线 |
 | M2 | 组织场：压力求解 + 灌注 + 创口通量 |
 | M3 | 关节三级状态机 + 结构求交 |

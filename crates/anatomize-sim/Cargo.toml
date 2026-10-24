@@ -1,0 +1,11 @@
+[package]
+name = "anatomize-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "世界编排：rapier2d 驱动、固定 tick、ragdoll 组装"
+
+[dependencies]
+anatomize-core = { path = "../anatomize-core" }
+anatomize-body = { path = "../anatomize-body" }
+rapier2d = "0.36.1"

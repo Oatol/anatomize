@@ -1,0 +1,9 @@
+[package]
+name = "anatomize-physio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "0D 腔室生理：循环、呼吸、代谢、神经"
+
+[dependencies]
+anatomize-core = { path = "../anatomize-core" }

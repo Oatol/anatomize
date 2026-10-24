@@ -1,0 +1,9 @@
+[package]
+name = "anatomize-tissue"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "组织场：压力、灌注、氧合、温度、损伤"
+
+[dependencies]
+anatomize-core = { path = "../anatomize-core" }

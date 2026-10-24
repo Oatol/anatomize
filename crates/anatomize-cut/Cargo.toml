@@ -1,0 +1,10 @@
+[package]
+name = "anatomize-cut"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "几何切割：多边形裁剪、凸分解、切面结构判定"
+
+[dependencies]
+anatomize-core = { path = "../anatomize-core" }
+anatomize-body = { path = "../anatomize-body" }
