@@ -73,21 +73,6 @@ fn point_in_poly(poly: &[Vec2], p: Vec2) -> bool {
     true
 }
 
-/// 扇形三角化之后用 Mesh 提交。凸多边形用这个最稳。
-fn fill_mesh(painter: &Painter, pts: &[Pos2], color: Color32) {
-    if pts.len() < 3 {
-        return;
-    }
-    let mut mesh = egui::Mesh::default();
-    for p in pts {
-        mesh.colored_vertex(*p, color);
-    }
-    for i in 1..pts.len() - 1 {
-        mesh.add_triangle(0, i as u32, i as u32 + 1);
-    }
-    painter.add(Shape::mesh(mesh));
-}
-
 pub fn c32a(c: [u8; 4], a: u8) -> Color32 {
     Color32::from_rgba_unmultiplied(c[0], c[1], c[2], a)
 }
